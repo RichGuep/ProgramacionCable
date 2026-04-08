@@ -4,7 +4,7 @@ from pulp import *
 
 st.set_page_config(page_title="Programador Pro 2026", layout="wide")
 
-st.title("🗓️ Programador de Turnos con Auditoría de Métricas")
+st.title("🗓️ Programador de Turnos: Auditoría de Personal y Operación")
 
 # --- 1. CARGA DE DATOS ---
 try:
@@ -28,13 +28,14 @@ with st.sidebar:
     st.info(f"Personal: {len(df[df[col_car] == cargo_sel])}")
 
 # --- 3. MOTOR ---
-if st.button(f"🚀 Generar y Auditar {cargo_sel}"):
+if st.button(f"🚀 Generar Programación y Métricas"):
     df_f = df[df[col_car] == cargo_sel]
     semanas, dias, turnos = [1, 2, 3, 4], ["Lunes", "Martes", "Miercoles", "Jueves", "Viernes", "Sabado", "Domingo"], ["AM", "PM", "Noche"]
     
     prob = LpProblem("Malla_Auditada", LpMaximize)
     asig = LpVariable.dicts("Asig", (df_f[col_nom], semanas, dias, turnos), cat='Binary')
 
+    # Función Objetivo: Maximizar cobertura
     prob += lpSum([asig[e][s][d][t] for e in df_f[col_nom] for s in semanas for d in dias for t in turnos])
 
     for s in semanas:
@@ -50,15 +51,14 @@ if st.button(f"🚀 Generar y Auditar {cargo_sel}"):
     for _, row in df_f.iterrows():
         e = row[col_nom]
         for s in semanas:
-            prob += lpSum([asig[e][s][d][t] for d in dias for t in turnos]) == 5 # 5 días laborables
+            prob += lpSum([asig[e][s][d][t] for d in dias for t in turnos]) == 5
         
         dia_c = "Sabado" if "sabado" in row[col_des] else "Domingo"
-        prob += lpSum([asig[e][s][dia_c][t] for s in semanas for t in turnos]) <= 2 # Min 2 libres al mes
+        prob += lpSum([asig[e][s][dia_c][t] for s in semanas for t in turnos]) <= 2
 
     prob.solve(PULP_CBC_CMD(msg=0))
 
     if LpStatus[prob.status] == 'Optimal':
-        # Procesar resultados
         res_list = []
         for s in semanas:
             for d in dias:
@@ -69,50 +69,48 @@ if st.button(f"🚀 Generar y Auditar {cargo_sel}"):
                     res_list.append({"Semana": s, "Dia": d, "Empleado": e, "Turno": t_asig, "Contrato": df_f[df_f[col_nom]==e][col_des].values[0]})
         
         df_res = pd.DataFrame(res_list)
-        
-        # --- VISUALIZACIÓN ---
-        st.success("✅ Malla Mensual Generada")
-        tabs = st.tabs([f"Semana {s}" for s in semanas])
-        for i, s in enumerate(semanas):
-            with tabs[i]:
+        st.success(f"✅ Programación Mensual: {cargo_sel}")
+
+        # --- TABS DE VISUALIZACIÓN ---
+        tab_malla, tab_auditoria_emp, tab_auditoria_cupo = st.tabs(["📅 Malla Mensual", "👤 Auditoría Empleados", "🏭 Cobertura Operativa"])
+
+        with tab_malla:
+            for s in semanas:
+                st.subheader(f"Semana {s}")
                 malla = df_res[df_res['Semana'] == s].pivot(index='Empleado', columns='Dia', values='Turno')
                 st.dataframe(malla.reindex(columns=dias), use_container_width=True)
 
-        # --- PANEL DE MÉTRICAS Y AUDITORÍA ---
-        st.divider()
-        st.header("📊 Auditoría de Cumplimiento Mensual")
-        
-        metricas = []
-        for e in df_f[col_nom]:
-            data_emp = df_res[df_res['Empleado'] == e]
-            contrato = data_emp['Contrato'].iloc[0]
-            dia_c = "Sabado" if "sabado" in contrato else "Domingo"
+        with tab_auditoria_emp:
+            st.header("📊 Auditoría de Descansos por Empleado")
+            met_emp = []
+            for e in df_f[col_nom]:
+                data_e = df_res[df_res['Empleado'] == e]
+                dia_c = "Sabado" if "sabado" in data_e['Contrato'].iloc[0] else "Domingo"
+                libres = len(data_e[(data_e['Dia'] == dia_c) & (data_e['Turno'] == 'DESCANSO')])
+                comp = len(data_e[(data_e['Dia'].isin(["Lunes", "Martes", "Miercoles", "Jueves", "Viernes"])) & (data_e['Turno'] == 'DESCANSO')])
+                met_emp.append({"Empleado": e, "Día Contrato": dia_c, "Fines de Semana Libres": f"{libres}/4", "Compensatorios L-V": comp})
+            st.table(pd.DataFrame(met_emp))
+
+        with tab_auditoria_cupo:
+            st.header("🏭 Cumplimiento de Cupos por Turno")
+            st.write(f"Objetivo por turno: **{cupo_manual} técnicos**")
             
-            # Conteo de Sábados/Domingos Libres
-            libres_contrato = len(data_emp[(data_emp['Dia'] == dia_c) & (data_emp['Turno'] == 'DESCANSO')])
-            
-            # Conteo de Compensatorios (Descansos entre Lunes y Viernes)
-            dias_semana = ["Lunes", "Martes", "Miercoles", "Jueves", "Viernes"]
-            compensatorios = len(data_emp[(data_emp['Dia'].isin(dias_semana)) & (data_emp['Turno'] == 'DESCANSO')])
-            
-            # Rotación de turnos (Cuantos turnos diferentes tuvo)
-            turnos_unicos = data_emp[data_emp['Turno'] != 'DESCANSO']['Turno'].nunique()
-            
-            metricas.append({
-                "Empleado": e,
-                "Día Contrato": dia_c,
-                "Fines de Semana Libres": f"{libres_contrato} / 4",
-                "Compensatorios (L-V)": compensatorios,
-                "Estabilidad Turno": "Alta" if turnos_unicos == 1 else ("Media" if turnos_unicos == 2 else "Baja")
-            })
-        
-        st.table(pd.DataFrame(metricas))
-        
-        # Alerta de Cumplimiento Legal
-        if all(int(m["Fines de Semana Libres"].split()[0]) >= 2 for m in metricas):
-            st.info("⚖️ **Estatus Legal:** Se cumple con el mínimo de 2 descansos dominicales/sabatinos al mes para todo el personal.")
-        else:
-            st.warning("⚠️ **Atención:** Algunos empleados tienen menos de 2 descansos en su día contractual.")
+            for s in semanas:
+                st.subheader(f"Análisis de Cobertura - Semana {s}")
+                data_s = df_res[df_res['Semana'] == s]
+                
+                # Crear tabla de cumplimiento
+                cob_data = []
+                for t in turnos:
+                    fila_t = {"Turno": t}
+                    for d in dias:
+                        conteo = len(data_s[(data_s['Dia'] == d) & (data_s['Turno'] == t)])
+                        # Usamos iconos para ver rápido si se cumplió
+                        status = "✅" if conteo == cupo_manual else ("⚠️" if conteo > 0 else "❌")
+                        fila_t[d] = f"{status} {conteo}"
+                    cob_data.append(fila_t)
+                
+                st.table(pd.DataFrame(cob_data))
 
     else:
-        st.error("No se pudo generar la malla. Revisa la disponibilidad de personal.")
+        st.error("No se pudo generar la solución. Revisa el balance entre personal y cupos.")
