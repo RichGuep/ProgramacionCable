@@ -5,7 +5,7 @@ import calendar
 from datetime import datetime
 
 st.set_page_config(page_title="Programador Pro 2026", layout="wide")
-st.title("🗓️ Programador de Turnos Inteligente: Calendario Dinámico")
+st.title("🗓️ Programador de Turnos: Lógica de Compensatorios y Calendario")
 
 # --- 1. CARGA DE DATOS ---
 try:
@@ -20,100 +20,102 @@ try:
 except Exception as e:
     st.error(f"Error al leer Excel: {e}"); st.stop()
 
-# --- 2. PARAMETRIZACIÓN DE TIEMPO (NUEVO) ---
+# --- 2. PARAMETRIZACIÓN ---
 with st.sidebar:
-    st.header("📅 Periodo a Programar")
-    hoy = datetime.now()
+    st.header("📅 Periodo")
     ano_sel = st.selectbox("Año", [2025, 2026, 2027], index=1)
     meses_nombres = ["Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio", 
                      "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"]
-    mes_sel_nombre = st.selectbox("Mes", meses_nombres, index=hoy.month - 1)
+    mes_sel_nombre = st.selectbox("Mes", meses_nombres, index=datetime.now().month - 1)
     mes_num = meses_nombres.index(mes_sel_nombre) + 1
 
     st.divider()
-    st.header("⚙️ Cupos Operativos")
+    st.header("⚙️ Operación")
     cargo_sel = st.selectbox("Cargo", sorted(df[col_car].unique()))
-    cupo_manual = st.number_input(f"Cupo por turno", value=2 if "master" in cargo_sel.lower() else 7)
+    cupo_manual = st.number_input(f"Cupo ideal por turno", value=2)
 
-# --- 3. LÓGICA DE CALENDARIO ---
-# Obtenemos los días exactos del mes seleccionado
+# --- 3. CÁLCULO DE DÍAS ---
 num_dias_mes = calendar.monthrange(ano_sel, mes_num)[1]
-lista_dias = []
-dias_semana_esp = ["Lunes", "Martes", "Miercoles", "Jueves", "Viernes", "Sabado", "Domingo"]
+dias_mes = []
+dias_esp = ["Lunes", "Martes", "Miercoles", "Jueves", "Viernes", "Sabado", "Domingo"]
 
-for dia in range(1, num_dias_mes + 1):
-    fecha = datetime(ano_sel, mes_num, dia)
-    nombre_dia = dias_semana_esp[fecha.weekday()]
-    lista_dias.append({"fecha": dia, "nombre": nombre_dia})
+for d in range(1, num_dias_mes + 1):
+    fecha = datetime(ano_sel, mes_num, d)
+    dias_mes.append({"n": d, "nombre": dias_esp[fecha.weekday()]})
 
-# --- 4. MOTOR DE OPTIMIZACIÓN ---
-if st.button(f"🚀 Generar Programación {mes_sel_nombre} {ano_sel}"):
+# --- 4. MOTOR ---
+if st.button(f"🚀 Generar Malla {mes_sel_nombre}"):
     df_f = df[df[col_car] == cargo_sel]
     turnos = ["AM", "PM", "Noche"]
     
-    prob = LpProblem("Malla_Dinamica", LpMinimize)
-    # Variable: asig[empleado, dia_del_mes, turno]
+    # Maximizamos cobertura para que use a los 4 disponibles el finde al máximo
+    prob = LpProblem("Malla_Compensada", LpMaximize)
     asig = LpVariable.dicts("Asig", (df_f[col_nom], range(1, num_dias_mes + 1), turnos), cat='Binary')
 
-    # A. RESTRICCIÓN DE CUPO DIARIO
-    for d_info in lista_dias:
-        d = d_info["fecha"]
+    # OBJETIVO: Llenar la mayor cantidad de turnos
+    prob += lpSum([asig[e][d_info["n"]][t] for e in df_f[col_nom] for d_info in dias_mes for t in turnos])
+
+    # A. RESTRICCIONES DE CUPO
+    for d_info in dias_mes:
+        d = d_info["n"]
         for t in turnos:
-            prob += lpSum([asig[e][d][t] for e in df_f[col_nom]]) == cupo_manual
+            # Cupo máximo pedido (2 para masters)
+            prob += lpSum([asig[e][d][t] for e in df_f[col_nom]]) <= cupo_manual
 
     # B. RESTRICCIONES POR EMPLEADO
     for _, row in df_f.iterrows():
         e = row[col_nom]
         contrato = row[col_des]
-        dia_contrato_nombre = "Sabado" if "sabado" in contrato else "Domingo"
+        dia_fijo = "Sabado" if "sabado" in contrato else "Domingo"
         
-        # 1. Un turno al día máximo
+        # 1. Un turno al día
         for d in range(1, num_dias_mes + 1):
             prob += lpSum([asig[e][d][t] for t in turnos]) <= 1
-        
-        # 2. Descanso Biológico (No Noche -> AM/PM al día siguiente)
+
+        # 2. Descanso Biológico (Noche no puede AM/PM mañana)
         for d in range(1, num_dias_mes):
             prob += asig[e][d]["Noche"] + asig[e][d+1]["AM"] <= 1
             prob += asig[e][d]["Noche"] + asig[e][d+1]["PM"] <= 1
 
-        # 3. GARANTÍA DE DESCANSO FIN DE SEMANA (Mínimo 2 Libres en el mes)
-        # Filtramos los días del mes que coinciden con su día de contrato
-        dias_contrato_mes = [di["fecha"] for di in lista_dias if di["nombre"] == dia_contrato_nombre]
-        prob += lpSum([asig[e][d][t] for d in dias_contrato_mes for t in turnos]) <= (len(dias_contrato_mes) - 2)
+        # 3. REGLA CLAVE: Exactamente 2 descansos de fin de semana al mes
+        dias_c_mes = [di["n"] for di in dias_mes if di["nombre"] == dia_fijo]
+        prob += lpSum([asig[e][d][t] for d in dias_c_mes for t in turnos]) == (len(dias_c_mes) - 2)
 
-        # 4. REFORMA LABORAL: Promedio 2 días de descanso por cada 7 días
-        # Calculamos cuántos días debe trabajar en total el mes para cumplir con la ley
-        dias_laborables_objetivo = int((num_dias_mes / 7) * 5)
-        prob += lpSum([asig[e][d][t] for d in range(1, num_dias_mes + 1) for t in turnos]) == dias_laborables_objetivo
+        # 4. COMPENSATORIOS: Trabajar 5 días por semana (promedio)
+        # Total días a trabajar = (Días del mes / 7) * 5
+        total_laboral = int((num_dias_mes / 7) * 5)
+        prob += lpSum([asig[e][d][t] for d in range(1, num_dias_mes + 1) for t in turnos]) == total_laboral
 
-    # RESOLVER
-    with st.spinner("Calculando malla óptima..."):
-        prob.solve(PULP_CBC_CMD(msg=0))
+    prob.solve(PULP_CBC_CMD(msg=0))
 
-    if LpStatus[prob.status] == 'Optimal':
-        st.success(f"✅ Programación de {mes_sel_nombre} generada exitosamente.")
+    if LpStatus[prob.status] in ['Optimal']:
+        st.success(f"✅ Malla generada: 2 {dia_fijo}s libres y compensatorios entre semana aplicados.")
         
         res_list = []
-        for d_info in lista_dias:
-            d = d_info["fecha"]
+        for d_info in dias_mes:
+            d = d_info["n"]
             for e in df_f[col_nom]:
                 t_asig = "DESCANSO"
                 for t in turnos:
                     if value(asig[e][d][t]) == 1: t_asig = t
-                res_list.append({"Dia": d, "Nombre_Dia": d_info["nombre"], "Empleado": e, "Turno": t_asig})
+                res_list.append({"Dia": d, "Dia_Nom": d_info["nombre"], "Empleado": e, "Turno": t_asig})
         
         df_res = pd.DataFrame(res_list)
         
-        # Visualización: Dividimos por semanas para que no sea una tabla gigante
-        num_semanas = (num_dias_mes // 7) + 1
-        for s in range(num_semanas):
-            inicio = s * 7 + 1
-            fin = min((s + 1) * 7, num_dias_mes)
-            if inicio <= num_dias_mes:
-                st.subheader(f"Del {inicio} al {fin} de {mes_sel_nombre}")
-                malla_sem = df_res[(df_res['Dia'] >= inicio) & (df_res['Dia'] <= fin)]
-                malla_pivot = malla_sem.pivot(index='Empleado', columns='Dia', values='Turno')
-                st.dataframe(malla_pivot, use_container_width=True)
-
+        # Visualización Semanal
+        for s in range((num_dias_mes // 7) + 1):
+            i, f = s * 7 + 1, min((s + 1) * 7, num_dias_mes)
+            if i <= num_dias_mes:
+                st.subheader(f"Semana del {i} al {f}")
+                malla = df_res[(df_res['Dia'] >= i) & (df_res['Dia'] <= f)].pivot(index='Empleado', columns='Dia', values='Turno')
+                st.dataframe(malla, use_container_width=True)
+                
+                # Métrica de cobertura
+                data_s = df_res[(df_res['Dia'] >= i) & (df_res['Dia'] <= f)]
+                cobs = []
+                for d_idx in range(i, f + 1):
+                    c = len(data_s[(data_s['Dia'] == d_idx) & (data_s['Turno'] != 'DESCANSO')])
+                    cobs.append(f"{d_idx}: {c}/{cupo_manual*3}")
+                st.caption("Cobertura diaria (Asignados/Cupo Total): " + " | ".join(cobs))
     else:
-        st.error("❌ No hay solución. Revisa que el personal sea suficiente para los cupos.")
+        st.error("❌ Conflicto de reglas. Intenta revisar el personal disponible.")
