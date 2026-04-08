@@ -1,13 +1,12 @@
 import streamlit as st
 import pandas as pd
-import plotly.express as px
 from datetime import datetime
 import processor
 
 ADMIN_EMAIL = "richard.guevara@greenmovil.com.co"
 st.set_page_config(page_title="NexOp | Green Móvil", layout="wide", page_icon="⚡")
 
-# --- ESTILO CORPORATIVO ---
+# --- ESTILO SIN PLOTLY ---
 st.markdown("""
     <style>
     @import url('https://fonts.cdnfonts.com/css/century-gothic');
@@ -48,17 +47,17 @@ def ventana_gestion(viaje):
 
     with st.form("form_g"):
         c1, c2 = st.columns(2)
-        bus_r = c1.selectbox("Móvil Real:", options=lista_b, index=idx_def)
-        mot_m = c1.selectbox("Motivo Móvil:", ["Operación Normal", "RETOMA", "Falta movil", "Bus varado", "Accidente"])
+        bus_r = c1.selectbox("Bus Real:", options=lista_b, index=idx_def)
+        mot_m = c1.selectbox("Motivo:", ["Operación Normal", "RETOMA", "Falta movil", "Bus varado", "Accidente"])
         ope_r = c2.text_input("Operador Real:", value=viaje['ope_prog'])
         mot_o = c2.selectbox("Motivo Operador:", ["Operación Normal", "Falta operador", "Enfermo", "No llegó"])
-        elim_k = c2.toggle("¿Eliminar KM?")
-        obs = st.text_area("Observaciones Finales")
+        elim_k = c2.toggle("¿Eliminar Kilometraje?")
+        obs = st.text_area("Notas Finales")
         if st.form_submit_button("✅ GUARDAR CAMBIOS", use_container_width=True):
             if processor.aplicar_gestion_servicio({"servbus": viaje['servbus'], "bus_prog": viaje['bus_prog'], "bus_real": bus_r, "motivo_movil": mot_m, "ope_prog": viaje['ope_prog'], "ope_real": ope_r, "motivo_ope": mot_o, "eliminar_km": "SI" if elim_k else "NO", "obs_final": obs}, st.session_state.user_info['nombre']):
-                st.success("Guardado"); st.rerun()
+                st.rerun()
 
-# --- APP LAYOUT ---
+# --- APP ---
 st.markdown('<div class="main-header"><h1>NexOp | Green Móvil</h1></div>', unsafe_allow_html=True)
 df = processor.cargar_datos_pantalla()
 u_info = st.session_state.user_info
@@ -76,19 +75,22 @@ if not df.empty:
         c2.metric("Buses", len(df_f['bus_prog'].unique()))
         with st.expander("🔍 CONSULTAR LISTADO POR RUTA"):
             st.dataframe(df_f.groupby(['ruta', 'tabla'])['bus_prog'].first().reset_index(), use_container_width=True, hide_index=True)
-        st.plotly_chart(px.bar(df_f.groupby('ruta').size().reset_index(name='Cant'), x='ruta', y='Cant', color_discrete_sequence=['#1a531f']), use_container_width=True)
+        # Gráfica nativa de Streamlit (No usa Plotly)
+        chart_data = df_f.groupby('ruta').size().reset_index(name='Servicios')
+        st.bar_chart(chart_data.set_index('ruta'), color="#1a531f")
 
-    with tabs[1]: # GESTIÓN PIR
+    with tabs[1]: # GESTIÓN
         cols = ['timeOrigin', 'ruta', 'tabla', 'bus_prog', 'ope_prog', 'empresa', 'servbus']
         sel = st.dataframe(df_f[cols], use_container_width=True, hide_index=True, on_select="rerun", selection_mode="single-row")
         if sel.selection.rows: ventana_gestion(df_f.iloc[sel.selection.rows[0]])
 
     if is_admin:
         with tabs[3]: # RRHH
-            st.subheader("📈 Control de Descansos y Compensatorios")
+            st.subheader("📈 Control de RRHH")
             df_rr = processor.calcular_metricas_rrhh(df)
             st.dataframe(df_rr, use_container_width=True, hide_index=True)
-            st.plotly_chart(px.bar(df_rr, x="Operador", y="Sábados", color="Compensatorio"), use_container_width=True)
+            # Gráfica nativa de Sábados
+            st.bar_chart(df_rr.set_index('Operador')[['Sábados', 'Domingos']])
 
 if is_admin:
     with tabs[-1]: # CONFIG
