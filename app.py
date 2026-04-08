@@ -5,7 +5,7 @@ import calendar
 from datetime import datetime
 
 st.set_page_config(page_title="Programador Pro 2026", layout="wide")
-st.title("🗓️ Programación: Estabilidad y Protección del Sueño")
+st.title("🗓️ Programación: Estabilidad, Higiene y Auditoría")
 
 # --- 1. CARGA DE DATOS ---
 try:
@@ -46,20 +46,22 @@ for d in range(1, num_dias + 1):
         "label": f"{d} - {dias_esp[fecha.weekday()]}"
     })
 
-# --- 4. MOTOR ---
+# --- 4. MOTOR DE OPTIMIZACIÓN ---
 if st.button(f"🚀 Generar Programación"):
     df_f = df[df[col_car] == cargo_sel].copy()
     turnos = ["AM", "PM", "Noche"]
-    prob = LpProblem("Estabilidad_Higiene", LpMaximize)
+    prob = LpProblem("Malla_Completa_Estable", LpMaximize)
     
-    # Variables
+    # Variables de asignación
     asig = LpVariable.dicts("Asig", (df_f[col_nom], range(1, num_dias + 1), turnos), cat='Binary')
+    # Variable para incentivar que el turno de hoy sea igual al de ayer
     mantiene = LpVariable.dicts("Mantiene", (df_f[col_nom], range(2, num_dias + 1), turnos), cat='Binary')
 
-    # OBJETIVO: Cobertura + Premio por no cambiar turno (Estabilidad)
+    # OBJETIVO: Maximizar cobertura + Incentivo de estabilidad (0.5)
     prob += lpSum([asig[e][d][t] for e in df_f[col_nom] for d in range(1, num_dias + 1) for t in turnos]) + \
             lpSum([mantiene[e][d][t] * 0.5 for e in df_f[col_nom] for d in range(2, num_dias + 1) for t in turnos])
 
+    # Restricción de cupos
     for d_i in dias_info:
         d = d_i["n"]
         for t in turnos:
@@ -78,12 +80,12 @@ if st.button(f"🚀 Generar Programación"):
                 prob += asig[e][d]["Noche"] + asig[e][d+1]["PM"] <= 1
                 prob += asig[e][d]["PM"] + asig[e][d+1]["AM"] <= 1
                 
-                # REGLA DE ESTABILIDAD
+                # ESTABILIDAD: Si mantiene[d+1][t] es 1, obliga a que asig[d] y asig[d+1] sean iguales para ese turno
                 for t in turnos:
                     prob += mantiene[e][d+1][t] <= asig[e][d][t]
                     prob += mantiene[e][d+1][t] <= asig[e][d+1][t]
 
-        # Descansos Finde y Reforma
+        # Descansos Finde y Reforma (Días laborados)
         d_f_m = [di["n"] for di in dias_info if di["nombre"] == dia_c_nom]
         prob += lpSum([asig[e][d][t] for d in d_f_m for t in turnos]) == (len(d_f_m) - 2)
         prob += lpSum([asig[e][d][t] for d in range(1, num_dias + 1) for t in turnos]) >= 21
@@ -91,7 +93,7 @@ if st.button(f"🚀 Generar Programación"):
     prob.solve(PULP_CBC_CMD(msg=0))
 
     if LpStatus[prob.status] == 'Optimal':
-        # Procesamiento final corregido
+        # Procesamiento de resultados
         res_list = []
         for d_i in dias_info:
             d = d_i["n"]
@@ -107,35 +109,34 @@ if st.button(f"🚀 Generar Programación"):
         
         df_res = pd.DataFrame(res_list)
         
-        # Asignación de Descansos/DISPO
+        # Lógica de Descansos Discriminados
         lista_final = []
         for emp, grupo in df_res.groupby("Empleado"):
             grupo = grupo.copy()
             d_c_n = "Sab" if "sabado" in grupo['Contrato'].iloc[0] else "Dom"
-            # 2 Libres contractuales
+            # 2 Libres contractuales (Sábado o Domingo)
             idx_f = grupo[(grupo['Turno'] == '---') & (grupo['Nom_Dia'] == d_c_n)].head(2).index
             grupo.loc[idx_f, 'Turno'] = 'DESC. CONTRATO'
-            # 2 Compensatorios L-V
+            # Máximo 2 Compensatorios L-V (para que trabajen más días)
             idx_c = grupo[(grupo['Turno'] == '---') & (~grupo['Nom_Dia'].isin(['Sab', 'Dom']))].head(2).index
             grupo.loc[idx_c, 'Turno'] = 'DESC. L-V'
-            # Resto DISPO
+            # Resto queda como DISPO
             grupo.loc[grupo['Turno'] == '---', 'Turno'] = 'DISPO'
             lista_final.append(grupo)
 
         df_final = pd.concat(lista_final).reset_index(drop=True)
         df_final['ID'] = df_final['Empleado'] + " (" + df_final['Contrato'].str.upper() + ")"
 
-        # Estilo de Celdas
+        # Colores de la tabla
         def style_fn(val):
             if val == 'DESC. CONTRATO': return 'background-color: #ffb3b3; color: #b30000; font-weight: bold'
             if val == 'DESC. L-V': return 'background-color: #ffd9b3; color: #804000; font-weight: bold'
             if val == 'DISPO': return 'background-color: #e6f3ff; color: #004080'
             return ''
 
-        # --- VISTAS ---
+        # --- MOSTRAR VISTAS ---
         if tipo_vista == "Mes Completo":
             m_full = df_final.pivot(index='ID', columns='Label', values='Turno')
-            # Reordenar columnas para que 10 no vaya antes que 2
             cols_sorted = sorted(m_full.columns, key=lambda x: int(x.split(' - ')[0]))
             st.dataframe(m_full[cols_sorted].style.map(style_fn), use_container_width=True)
         else:
@@ -147,6 +148,22 @@ if st.button(f"🚀 Generar Programación"):
                     cols_s = sorted(m_s.columns, key=lambda x: int(x.split(' - ')[0]))
                     st.dataframe(m_s[cols_s].style.map(style_fn), use_container_width=True)
 
-        st.success("✅ Programación generada con enfoque en estabilidad y higiene del sueño.")
+        # --- REINCORPORACIÓN DE MÉTRICAS ---
+        st.divider()
+        st.subheader("📊 Auditoría de Control de Turnos y Descansos")
+        audit_data = []
+        for e, g in df_final.groupby("Empleado"):
+            turnos_reales = g[g['Turno'].isin(turnos)]['Turno'].unique()
+            audit_data.append({
+                "Empleado": e,
+                "Tipo Contrato": g['Contrato'].iloc[0].upper(),
+                "Desc. Finde": len(g[g['Turno'] == 'DESC. CONTRATO']),
+                "Compensatorios L-V": len(g[g['Turno'] == 'DESC. L-V']),
+                "Días DISPO": len(g[g['Turno'] == 'DISPO']),
+                "Días Trabajados": len(g[g['Turno'].isin(turnos)]),
+                "Turnos del Mes": " / ".join(turnos_reales),
+                "Estado": "✅ ESTABLE" if len(turnos_reales) <= 2 else "⚠️ ALTA ROTACIÓN"
+            })
+        st.table(pd.DataFrame(audit_data))
     else:
-        st.error("❌ No hay solución. Revisa el balance personal/cupos.")
+        st.error("❌ No hay solución lógica. Verifica los cupos o el personal disponible.")
