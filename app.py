@@ -4,8 +4,7 @@ from pulp import *
 
 st.set_page_config(page_title="Programador Pro 2026", layout="wide")
 
-st.title("🗓️ Programador de Turnos Inteligente")
-st.markdown("Prioriza estabilidad de turnos, descansos biológicos y cumplimiento de la reforma laboral.")
+st.title("🗓️ Programador de Turnos con Auditoría de Métricas")
 
 # --- 1. CARGA DE DATOS ---
 try:
@@ -19,107 +18,101 @@ try:
     df[col_car] = df[col_car].astype(str).str.strip()
     df[col_des] = df[col_des].astype(str).str.strip().str.lower()
 except Exception as e:
-    st.error(f"Error al leer el archivo: {e}")
-    st.stop()
+    st.error(f"Error al leer el archivo: {e}"); st.stop()
 
-# --- 2. FILTROS LATERALES ---
+# --- 2. FILTROS ---
 with st.sidebar:
     st.header("🔍 Panel de Control")
-    cargos_disponibles = sorted(df[col_car].unique())
-    cargo_sel = st.selectbox("Seleccione Cargo", cargos_disponibles)
-    
-    st.divider()
-    cupo_manual = st.number_input(f"Cupo por turno ({cargo_sel})", value=2 if "master" in cargo_sel.lower() else 7)
-    
-    total_cargo = len(df[df[col_car] == cargo_sel])
-    st.info(f"Personal disponible: {total_cargo}")
+    cargo_sel = st.selectbox("Seleccione Cargo", sorted(df[col_car].unique()))
+    cupo_manual = st.number_input(f"Cupo por turno", value=2 if "master" in cargo_sel.lower() else 7)
+    st.info(f"Personal: {len(df[df[col_car] == cargo_sel])}")
 
-# --- 3. MOTOR DE OPTIMIZACIÓN ---
-if st.button(f"🚀 Generar Programación para {cargo_sel}"):
+# --- 3. MOTOR ---
+if st.button(f"🚀 Generar y Auditar {cargo_sel}"):
     df_f = df[df[col_car] == cargo_sel]
-    semanas = [1, 2, 3, 4]
-    dias = ["Lunes", "Martes", "Miercoles", "Jueves", "Viernes", "Sabado", "Domingo"]
-    turnos = ["AM", "PM", "Noche"]
+    semanas, dias, turnos = [1, 2, 3, 4], ["Lunes", "Martes", "Miercoles", "Jueves", "Viernes", "Sabado", "Domingo"], ["AM", "PM", "Noche"]
     
-    prob = LpProblem("Malla_Humana", LpMaximize)
+    prob = LpProblem("Malla_Auditada", LpMaximize)
     asig = LpVariable.dicts("Asig", (df_f[col_nom], semanas, dias, turnos), cat='Binary')
 
-    # FUNCIÓN OBJETIVO: Maximizar cobertura
     prob += lpSum([asig[e][s][d][t] for e in df_f[col_nom] for s in semanas for d in dias for t in turnos])
 
-    # RESTRICCIONES
     for s in semanas:
         for d_idx, d in enumerate(dias):
             for t in turnos:
-                # Cupos máximos
                 prob += lpSum([asig[e][s][d][t] for e in df_f[col_nom]]) <= cupo_manual
-
-            # Restricciones por Empleado
-            for _, row in df_f.iterrows():
-                e = row[col_nom]
-                
-                # A. Solo un turno al día
+            for e in df_f[col_nom]:
                 prob += lpSum([asig[e][s][d][t] for t in turnos]) <= 1
-                
-                # B. DESCANSO BIOLÓGICO: Si ayer hizo NOCHE, hoy NO puede hacer AM ni PM
-                if d_idx > 0:
-                    ayer = dias[d_idx - 1]
-                    prob += asig[e][s][ayer]["Noche"] + asig[e][s][d]["AM"] <= 1
-                    prob += asig[e][s][ayer]["Noche"] + asig[e][s][d]["PM"] <= 1
-                
-                # C. Transición de semanas (Noche de Domingo a AM de Lunes)
-                if s > 1 and d == "Lunes":
-                    prob += asig[e][s-1]["Domingo"]["Noche"] + asig[e][s]["Lunes"]["AM"] <= 1
+                if d_idx > 0: # Descanso Biológico
+                    prob += asig[e][s][dias[d_idx-1]]["Noche"] + asig[e][s][d]["AM"] <= 1
+                    prob += asig[e][s][dias[d_idx-1]]["Noche"] + asig[e][s][d]["PM"] <= 1
 
-        # D. Reforma: 5 días de labor por semana
-        for _, row in df_f.iterrows():
-            e = row[col_nom]
-            prob += lpSum([asig[e][s][d][t] for d in dias for t in turnos]) == 5
-            
-            # E. Regla de Oro: 2 descansos contractuales al mes
-            contrato = row[col_des]
-            dia_c = "Sabado" if "sabado" in contrato else "Domingo"
-            prob += lpSum([asig[e][s][dia_c][t] for s in semanas for t in turnos]) <= 2
+    for _, row in df_f.iterrows():
+        e = row[col_nom]
+        for s in semanas:
+            prob += lpSum([asig[e][s][d][t] for d in dias for t in turnos]) == 5 # 5 días laborables
+        
+        dia_c = "Sabado" if "sabado" in row[col_des] else "Domingo"
+        prob += lpSum([asig[e][s][dia_c][t] for s in semanas for t in turnos]) <= 2 # Min 2 libres al mes
 
-    # RESOLVER
     prob.solve(PULP_CBC_CMD(msg=0))
 
     if LpStatus[prob.status] == 'Optimal':
-        st.success(f"✅ Programación para {cargo_sel} generada con criterios de descanso biológico.")
-        
-        # Procesamiento de resultados
+        # Procesar resultados
         res_list = []
         for s in semanas:
             for d in dias:
                 for e in df_f[col_nom]:
                     t_asig = "DESCANSO"
                     for t in turnos:
-                        if value(asig[e][s][d][t]) == 1:
-                            t_asig = t
-                    res_list.append({"Semana": s, "Dia": d, "Empleado": e, "Turno": t_asig})
+                        if value(asig[e][s][d][t]) == 1: t_asig = t
+                    res_list.append({"Semana": s, "Dia": d, "Empleado": e, "Turno": t_asig, "Contrato": df_f[df_f[col_nom]==e][col_des].values[0]})
         
         df_res = pd.DataFrame(res_list)
-        tabs = st.tabs([f"Semana {s}" for s in semanas])
         
+        # --- VISUALIZACIÓN ---
+        st.success("✅ Malla Mensual Generada")
+        tabs = st.tabs([f"Semana {s}" for s in semanas])
         for i, s in enumerate(semanas):
             with tabs[i]:
                 malla = df_res[df_res['Semana'] == s].pivot(index='Empleado', columns='Dia', values='Turno')
-                
-                # Lógica para DISPO (identificar el segundo día libre como Gestión)
-                def asignar_dispo(row):
-                    desc = [j for j, val in enumerate(row) if val == "DESCANSO"]
-                    if len(desc) >= 2:
-                        row.iloc[desc[1]] = "DISPO" # El segundo descanso se vuelve DISPO
-                    return row
+                st.dataframe(malla.reindex(columns=dias), use_container_width=True)
 
-                malla_visual = malla.apply(asignar_dispo, axis=1)
-                st.dataframe(malla_visual.reindex(columns=dias), use_container_width=True)
-                
-                # Métricas de cobertura
-                st.subheader("📊 Cobertura Lograda")
-                metrics = st.columns(7)
-                for idx, d in enumerate(dias):
-                    cob = (malla_visual[d].isin(["AM", "PM", "Noche"])).sum()
-                    metrics[idx].metric(d, f"{cob}/{cupo_manual*3}")
+        # --- PANEL DE MÉTRICAS Y AUDITORÍA ---
+        st.divider()
+        st.header("📊 Auditoría de Cumplimiento Mensual")
+        
+        metricas = []
+        for e in df_f[col_nom]:
+            data_emp = df_res[df_res['Empleado'] == e]
+            contrato = data_emp['Contrato'].iloc[0]
+            dia_c = "Sabado" if "sabado" in contrato else "Domingo"
+            
+            # Conteo de Sábados/Domingos Libres
+            libres_contrato = len(data_emp[(data_emp['Dia'] == dia_c) & (data_emp['Turno'] == 'DESCANSO')])
+            
+            # Conteo de Compensatorios (Descansos entre Lunes y Viernes)
+            dias_semana = ["Lunes", "Martes", "Miercoles", "Jueves", "Viernes"]
+            compensatorios = len(data_emp[(data_emp['Dia'].isin(dias_semana)) & (data_emp['Turno'] == 'DESCANSO')])
+            
+            # Rotación de turnos (Cuantos turnos diferentes tuvo)
+            turnos_unicos = data_emp[data_emp['Turno'] != 'DESCANSO']['Turno'].nunique()
+            
+            metricas.append({
+                "Empleado": e,
+                "Día Contrato": dia_c,
+                "Fines de Semana Libres": f"{libres_contrato} / 4",
+                "Compensatorios (L-V)": compensatorios,
+                "Estabilidad Turno": "Alta" if turnos_unicos == 1 else ("Media" if turnos_unicos == 2 else "Baja")
+            })
+        
+        st.table(pd.DataFrame(metricas))
+        
+        # Alerta de Cumplimiento Legal
+        if all(int(m["Fines de Semana Libres"].split()[0]) >= 2 for m in metricas):
+            st.info("⚖️ **Estatus Legal:** Se cumple con el mínimo de 2 descansos dominicales/sabatinos al mes para todo el personal.")
+        else:
+            st.warning("⚠️ **Atención:** Algunos empleados tienen menos de 2 descansos en su día contractual.")
+
     else:
-        st.error("❌ No hay solución lógica. El personal es insuficiente para las reglas biológicas.")
+        st.error("No se pudo generar la malla. Revisa la disponibilidad de personal.")
