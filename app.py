@@ -6,7 +6,7 @@ from datetime import datetime
 
 st.set_page_config(page_title="Programador Pro 2026", layout="wide")
 
-st.title("🗓️ Programación con Estilo y Nombres de Día")
+st.title("🗓️ Programación de Turnos: Interfaz Mejorada")
 
 # --- 1. CARGA DE DATOS ---
 try:
@@ -24,13 +24,13 @@ except Exception as e:
 
 # --- 2. PARAMETRIZACIÓN ---
 with st.sidebar:
-    st.header("📅 Periodo y Cargo")
+    st.header("📅 Configuración del Mes")
     ano_sel = st.selectbox("Año", [2025, 2026, 2027], index=1)
     meses_n = ["Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio", "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"]
     mes_sel = st.selectbox("Mes", meses_n, index=datetime.now().month - 1)
     mes_num = meses_n.index(mes_sel) + 1
-    cargo_sel = st.selectbox("Filtrar por Cargo", sorted(df[col_car].unique()))
-    cupo_manual = st.number_input("Cupo objetivo por turno", value=2)
+    cargo_sel = st.selectbox("Cargo", sorted(df[col_car].unique()))
+    cupo_manual = st.number_input("Cupo por turno", value=2)
 
 # --- 3. LÓGICA DE CALENDARIO ---
 num_dias = calendar.monthrange(ano_sel, mes_num)[1]
@@ -38,10 +38,10 @@ dias_mes = [{"n": d, "nombre": ["Lun", "Mar", "Mie", "Jue", "Vie", "Sab", "Dom"]
 lista_columnas_bonitas = [f"{d['n']} - {d['nombre']}" for d in dias_mes]
 
 # --- 4. MOTOR DE OPTIMIZACIÓN ---
-if st.button(f"🚀 Generar Malla Estilizada {mes_sel}"):
+if st.button(f"🚀 Generar Malla {mes_sel}"):
     df_f = df[df[col_car] == cargo_sel].copy()
     turnos = ["AM", "PM", "Noche"]
-    prob = LpProblem("Malla_Estilo", LpMaximize)
+    prob = LpProblem("Malla_Final", LpMaximize)
     asig = LpVariable.dicts("Asig", (df_f[col_nom], range(1, num_dias + 1), turnos), cat='Binary')
 
     prob += lpSum([asig[e][d][t] for e in df_f[col_nom] for d in range(1, num_dias + 1) for t in turnos])
@@ -57,7 +57,7 @@ if st.button(f"🚀 Generar Malla Estilizada {mes_sel}"):
         
         for d in range(1, num_dias + 1):
             prob += lpSum([asig[e][d][t] for t in turnos]) <= 1
-            if d < num_dias: # Higiene del sueño
+            if d < num_dias: # Protección de sueño
                 prob += asig[e][d]["Noche"] + asig[e][d+1]["AM"] <= 1
                 prob += asig[e][d]["Noche"] + asig[e][d+1]["PM"] <= 1
                 prob += asig[e][d]["PM"] + asig[e][d+1]["AM"] <= 1
@@ -69,7 +69,7 @@ if st.button(f"🚀 Generar Malla Estilizada {mes_sel}"):
     prob.solve(PULP_CBC_CMD(msg=0))
 
     if LpStatus[prob.status] == 'Optimal':
-        # Procesamiento
+        # Post-procesamiento
         lista_final = []
         for emp, grupo in pd.DataFrame([{"Dia_Num": d["n"], "Dia_Label": f"{d['n']} - {d['nombre']}", "Nombre_Dia": d["nombre"], "Empleado": e, "Contrato": df_f[df_f[col_nom]==e][col_des].values[0], "Turno": next((t for t in turnos if value(asig[e][d["n"]][t]) == 1), "---")} for d in dias_mes for e in df_f[col_nom]]).groupby("Empleado"):
             grupo = grupo.copy()
@@ -85,36 +85,36 @@ if st.button(f"🚀 Generar Malla Estilizada {mes_sel}"):
                     grupo.loc[idx, 'Turno'] = 'DISPO'
             lista_final.append(grupo)
 
-        df_f_final = pd.concat(lista_final).reset_index(drop=True)
+        df_final = pd.concat(lista_final).reset_index(drop=True)
 
-        # --- VISUALIZACIÓN CON COLOR ---
-        st.success(f"✅ Malla generada para {cargo_sel}")
-        
-        df_f_final['ID'] = df_f_final['Empleado'] + " (" + df_f_final['Contrato'].str.upper() + ")"
-        malla_p = df_f_final.pivot(index='ID', columns='Dia_Label', values='Turno')
-        
-        # Reordenar columnas para que sigan el orden 1, 2, 3...
+        # --- VISUALIZACIÓN CORREGIDA ---
+        df_final['ID'] = df_final['Empleado'] + " (" + df_final['Contrato'].str.upper() + ")"
+        malla_p = df_final.pivot(index='ID', columns='Dia_Label', values='Turno')
         malla_p = malla_p.reindex(columns=lista_columnas_bonitas)
 
-        # Función para dar color
-        def color_descanso(val):
+        # Función de estilo (CSS para celdas)
+        def color_estilo(val):
             if val == 'DESCANSO':
-                return 'background-color: #ffcccc; color: #cc0000; font-weight: bold' # Rojo suave
+                return 'background-color: #ffcccc; color: #cc0000; font-weight: bold'
             if val == 'DISPO':
-                return 'background-color: #e6f3ff; color: #004080' # Azul suave
+                return 'background-color: #e6f3ff; color: #004080'
             return ''
 
-        st.subheader("📅 Malla Mensual Detallada")
-        st.dataframe(malla_p.style.applymap(color_descanso), use_container_width=True)
+        st.subheader(f"Malla Mensual: {mes_sel} {ano_sel}")
         
-        # --- MÉTRICAS ---
-        with st.expander("📊 Ver Auditoría de Cumplimiento"):
+        # EL CAMBIO CLAVE: usamos .map() en lugar de .applymap()
+        st.dataframe(malla_p.style.map(color_estilo), use_container_width=True)
+        
+        # --- AUDITORÍA ---
+        with st.expander("📊 Resumen de Auditoría"):
             auditoria = []
-            for e, g in df_f_final.groupby("Empleado"):
+            for e, g in df_final.groupby("Empleado"):
                 auditoria.append({
-                    "Empleado": e, "Descansos Finde": f"{len(g[g['Turno']=='DESCANSO' & g['Nombre_Dia'].isin(['Sab','Dom'])])}/2",
-                    "Días Laborados": len(g[g['Turno'].isin(['AM','PM','Noche'])])
+                    "Empleado": e, 
+                    "Días Trabajados": len(g[g['Turno'].isin(['AM','PM','Noche'])]),
+                    "Descansos Totales": len(g[g['Turno']=='DESCANSO']),
+                    "Disponibilidades": len(g[g['Turno']=='DISPO'])
                 })
             st.table(pd.DataFrame(auditoria))
     else:
-        st.error("❌ No hay solución lógica.")
+        st.error("❌ No hay solución lógica. Revisa los cupos.")
