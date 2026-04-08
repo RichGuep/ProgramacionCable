@@ -1,4 +1,6 @@
-streamlit
 pandas
-pulp
-openpyxl
+requests
+streamlit
+streamlit-gsheets-connection
+plotly
+urllib3
