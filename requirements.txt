@@ -1,6 +1,4 @@
-pandas
-requests
 streamlit
-streamlit-gsheets-connection
-plotly
-urllib3
+pandas
+pulp
+openpyxl
