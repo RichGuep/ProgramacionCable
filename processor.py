@@ -19,6 +19,7 @@ MAPEO_PIR = {
     "Brisas 2": ["L329", "L312", "K324"]
 }
 
+# Clasificación según imagen de referencia
 RUTAS_ZMO_III = ["H317", "L328", "B326", "H308", "L329", "L312", "K324"]
 RUTAS_ZMO_V = ["G311", "H327", "KA332", "L331", "B314", "H318", "L325"]
 
@@ -28,6 +29,7 @@ def obtener_usuarios():
     try:
         df = conn.read(worksheet="USUARIOS", ttl=0)
         df.columns = [str(c).lower().strip() for c in df.columns]
+        # Mapeo posicional para seguridad: 0:correo, 3:pw, 4:rol
         df = df.rename(columns={df.columns[0]: 'correo', df.columns[3]: 'pw', df.columns[4]: 'rol'})
         df['correo'] = df['correo'].astype(str).str.lower().str.strip()
         users_dict = df.set_index('correo').to_dict('index')
@@ -38,7 +40,6 @@ def obtener_usuarios():
 
 def aplicar_gestion_servicio(datos, usuario):
     try:
-        # 1. Historial GESTION_OPERATIVA
         try: df_hist = conn.read(worksheet="GESTION_OPERATIVA", ttl=0)
         except: df_hist = pd.DataFrame()
         nueva = pd.DataFrame([{
@@ -51,7 +52,6 @@ def aplicar_gestion_servicio(datos, usuario):
         }])
         conn.update(worksheet="GESTION_OPERATIVA", data=pd.concat([df_hist, nueva], ignore_index=True))
         
-        # 2. Actualizar PRG_MASTER
         df_m = conn.read(worksheet="PRG_MASTER", ttl=0)
         mask = df_m['servbus'].astype(str) == str(datos['servbus'])
         if mask.any():
@@ -84,7 +84,6 @@ def calcular_metricas_rrhh(df_prg):
             sabs = prog_ope[prog_ope['dia_nom'] == 'Saturday']['fecha'].nunique()
             doms = prog_ope[prog_ope['dia_nom'] == 'Sunday']['fecha'].nunique()
             lv = prog_ope[~prog_ope['dia_nom'].isin(['Saturday', 'Sunday'])]['fecha'].nunique()
-            # Lógica compensatorio: si trabajó fin de semana y tiene menos de 5 días L-V
             resumen.append({
                 "Operador": nombre, "Contrato": user.get('tipo_contrato', 'N/A'),
                 "Sábados": sabs, "Domingos": doms, "Días L-V": lv,
@@ -103,8 +102,10 @@ def sincronizar_semana_por_dias(f_ini, f_fin):
     f_dt_ini, f_dt_fin = pd.to_datetime(f_ini), pd.to_datetime(f_fin)
     delta = (f_dt_fin - f_dt_ini).days + 1
     lista_total = []
+    status_p = st.empty()
     for i in range(delta):
         fecha_t = (f_dt_ini + timedelta(days=i)).strftime('%Y-%m-%d')
+        status_p.info(f"⏳ Descargando: {fecha_t}...")
         r = requests.get(f"{BASE_TUNNEL_URL}/ws/reportes/semanaActual/{fecha_t}/{fecha_t}/0", headers={"Authorization": f"Bearer {token}", "ngrok-skip-browser-warning": "true"}, verify=False)
         if r.status_code == 200 and r.json():
             df_dia = pd.DataFrame(r.json()); df_dia['fecha'] = fecha_t; lista_total.append(df_dia)
