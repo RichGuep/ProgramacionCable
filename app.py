@@ -4,8 +4,8 @@ from pulp import *
 import calendar
 from datetime import datetime
 
-st.set_page_config(page_title="Programador Pro 2026 - Cumplimiento Legal", layout="wide")
-st.title("🗓️ Programación: Prioridad de Descansos Compensatorios")
+st.set_page_config(page_title="Programador Grupo Movil", layout="wide")
+st.title("🗓️ Programación:")
 
 # --- 1. CARGA DE DATOS ---
 try:
