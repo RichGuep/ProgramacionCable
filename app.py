@@ -4,8 +4,9 @@ from pulp import *
 import calendar
 from datetime import datetime
 
-st.set_page_config(page_title="Programador Pro - Auditoría Detallada", layout="wide")
-st.title("🗓️ Programación con Discriminación de Descansos y Compensatorios")
+st.set_page_config(page_title="Programador Pro - Vista Semanal", layout="wide")
+
+st.title("🗓️ Programación de Turnos: Control de Vistas")
 
 # --- 1. CARGA ---
 try:
@@ -20,29 +21,42 @@ try:
 except Exception as e:
     st.error(f"Error: {e}"); st.stop()
 
-# --- 2. PARAMETRIZACIÓN ---
+# --- 2. BARRA LATERAL (FILTROS) ---
 with st.sidebar:
     st.header("⚙️ Configuración")
     ano_sel = st.selectbox("Año", [2025, 2026, 2027], index=1)
     meses_n = ["Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio", "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"]
     mes_sel = st.selectbox("Mes", meses_n, index=datetime.now().month - 1)
     mes_num = meses_n.index(mes_sel) + 1
+    
     cargo_sel = st.selectbox("Cargo", sorted(df[col_car].unique()))
     cupo_manual = st.number_input("Cupo por turno", value=2)
+    
+    st.divider()
+    st.header("🖼️ Opciones de Visualización")
+    tipo_vista = st.radio("Seleccione cómo ver la malla:", ["Vista por Semanas", "Mes Completo"])
 
-# --- 3. CÁLCULOS DE CALENDARIO ---
+# --- 3. LÓGICA DE CALENDARIO ---
 num_dias = calendar.monthrange(ano_sel, mes_num)[1]
-dias_mes = [{"n": d, "nombre": ["Lun", "Mar", "Mie", "Jue", "Vie", "Sab", "Dom"][datetime(ano_sel, mes_num, d).weekday()]} for d in range(1, num_dias + 1)]
-lista_cols = [f"{d['n']} - {d['nombre']}" for d in dias_mes]
+dias_mes = []
+dias_esp = ["Lun", "Mar", "Mie", "Jue", "Vie", "Sab", "Dom"]
+for d in range(1, num_dias + 1):
+    fecha = datetime(ano_sel, mes_num, d)
+    # Calculamos el número de semana del mes para el filtro
+    n_semana = (d + fecha.replace(day=1).weekday() - 1) // 7 + 1
+    dias_mes.append({
+        "n": d, 
+        "nombre": dias_esp[fecha.weekday()],
+        "semana": n_semana
+    })
 
 # --- 4. MOTOR ---
-if st.button(f"🚀 Generar Malla con Auditoría Discriminada"):
+if st.button(f"🚀 Generar Malla"):
     df_f = df[df[col_car] == cargo_sel].copy()
     turnos = ["AM", "PM", "Noche"]
-    prob = LpProblem("Malla_Discriminada", LpMaximize)
+    prob = LpProblem("Malla_Vistas", LpMaximize)
     asig = LpVariable.dicts("Asig", (df_f[col_nom], range(1, num_dias + 1), turnos), cat='Binary')
 
-    # Maximizar trabajo para evitar descansos innecesarios
     prob += lpSum([asig[e][d][t] for e in df_f[col_nom] for d in range(1, num_dias + 1) for t in turnos])
 
     for d_i in dias_mes:
@@ -53,72 +67,67 @@ if st.button(f"🚀 Generar Malla con Auditoría Discriminada"):
     for _, row in df_f.iterrows():
         e, contrato = row[col_nom], row[col_des]
         dia_c_nom = "Sab" if "sabado" in contrato else "Dom"
-        
         for d in range(1, num_dias + 1):
             prob += lpSum([asig[e][d][t] for t in turnos]) <= 1
-            if d < num_dias: # Higiene del sueño
+            if d < num_dias:
                 prob += asig[e][d]["Noche"] + asig[e][d+1]["AM"] <= 1
                 prob += asig[e][d]["Noche"] + asig[e][d+1]["PM"] <= 1
                 prob += asig[e][d]["PM"] + asig[e][d+1]["AM"] <= 1
-
-        # Restricción: 2 descansos contractuales exactamente
         d_f_m = [di["n"] for di in dias_mes if di["nombre"] == dia_c_nom]
         prob += lpSum([asig[e][d][t] for d in d_f_m for t in turnos]) == (len(d_f_m) - 2)
-        
-        # Mínimo de días laborados para evitar el exceso de descansos (Reforma)
         prob += lpSum([asig[e][d][t] for d in range(1, num_dias + 1) for t in turnos]) >= 22
 
     prob.solve(PULP_CBC_CMD(msg=0))
 
     if LpStatus[prob.status] == 'Optimal':
-        # Procesamiento Detallado
+        # Procesamiento de estados
         lista_final = []
-        for emp, grupo in pd.DataFrame([{"Dia_Num": d["n"], "Dia_Label": f"{d['n']} - {d['nombre']}", "Nombre_Dia": d["nombre"], "Empleado": e, "Contrato": df_f[df_f[col_nom]==e][col_des].values[0], "Turno": next((t for t in turnos if value(asig[e][d["n"]][t]) == 1), "---")} for d in dias_mes for e in df_f[col_nom]]).groupby("Empleado"):
+        for emp, grupo in pd.DataFrame([{"Dia": d["n"], "Label": f"{d['n']} - {d['nombre']}", "Semana": d["semana"], "Nom_Dia": d["nombre"], "Empleado": e, "Contrato": df_f[df_f[col_nom]==e][col_des].values[0], "Turno": next((t for t in turnos if value(asig[e][d["n"]][t]) == 1), "---")} for d in dias_mes for e in df_f[col_nom]]).groupby("Empleado"):
             grupo = grupo.copy()
             dia_c_nom = "Sab" if "sabado" in grupo['Contrato'].iloc[0] else "Dom"
-            
-            # 1. Identificar Descansos de Fin de Semana (Contractuales)
-            idx_contrato = grupo[(grupo['Turno'] == '---') & (grupo['Nombre_Dia'] == dia_c_nom)].head(2).index
-            grupo.loc[idx_contrato, 'Turno'] = 'DESC. CONTRATO'
-            
-            # 2. Identificar Compensatorios Lunes a Viernes (Máximo 3)
-            idx_comp = grupo[(grupo['Turno'] == '---') & (~grupo['Nombre_Dia'].isin(['Sab', 'Dom']))].head(3).index
+            idx_c = grupo[(grupo['Turno'] == '---') & (grupo['Nom_Dia'] == dia_c_nom)].head(2).index
+            grupo.loc[idx_c, 'Turno'] = 'DESC. CONTRATO'
+            idx_comp = grupo[(grupo['Turno'] == '---') & (~grupo['Nom_Dia'].isin(['Sab', 'Dom']))].head(3).index
             grupo.loc[idx_comp, 'Turno'] = 'DESC. L-V'
-            
-            # 3. Marcar el resto como DISPO
             grupo.loc[grupo['Turno'] == '---', 'Turno'] = 'DISPO'
-            # Otros descansos que no entraron en las categorías anteriores por ser fines de semana no contractuales
-            grupo.loc[grupo['Turno'] == '---', 'Turno'] = 'DISPO' 
             lista_final.append(grupo)
 
         df_final = pd.concat(lista_final).reset_index(drop=True)
-
-        # --- VISUALIZACIÓN ---
-        st.subheader(f"Malla de Turnos: {mes_sel} {ano_sel}")
         df_final['ID'] = df_final['Empleado'] + " (" + df_final['Contrato'].str.upper() + ")"
-        malla_p = df_final.pivot(index='ID', columns='Dia_Label', values='Turno').reindex(columns=lista_cols)
-        
-        def estilo_celdas(val):
+
+        # Función de Estilo
+        def style_fn(val):
             if val == 'DESC. CONTRATO': return 'background-color: #ffb3b3; color: #b30000; font-weight: bold'
             if val == 'DESC. L-V': return 'background-color: #ffd9b3; color: #804000; font-weight: bold'
             if val == 'DISPO': return 'background-color: #e6f3ff; color: #004080'
             return ''
 
-        st.dataframe(malla_p.style.map(estilo_celdas), use_container_width=True)
+        # --- LÓGICA DE VISTAS ---
+        if tipo_vista == "Mes Completo":
+            st.subheader(f"📅 Malla Mensual: {mes_sel} {ano_sel}")
+            malla_full = df_final.pivot(index='ID', columns='Label', values='Turno')
+            st.dataframe(malla_full.style.map(style_fn), use_container_width=True)
+        else:
+            st.subheader(f"📅 Malla por Semanas: {mes_sel}")
+            semanas_del_mes = sorted(df_final['Semana'].unique())
+            tabs = st.tabs([f"Semana {s}" for s in semanas_del_mes])
+            for i, s in enumerate(semanas_del_mes):
+                with tabs[i]:
+                    df_sem = df_final[df_final['Semana'] == s]
+                    malla_sem = df_sem.pivot(index='ID', columns='Label', values='Turno')
+                    st.dataframe(malla_sem.style.map(style_fn), use_container_width=True)
 
-        # --- MÉTRICAS DISCRIMINADAS ---
-        st.divider()
-        st.subheader("📊 Discriminación de Descansos por Persona")
-        resumen = []
-        for e, g in df_final.groupby("Empleado"):
-            resumen.append({
-                "Empleado": e,
-                "Tipo Contrato": g['Contrato'].iloc[0].upper(),
-                "Descansos Finde (Contrato)": len(g[g['Turno'] == 'DESC. CONTRATO']),
-                "Compensatorios (Lunes-Viernes)": len(g[g['Turno'] == 'DESC. L-V']),
-                "Días en DISPONIBILIDAD": len(g[g['Turno'] == 'DISPO']),
-                "Total Días Trabajados": len(g[g['Turno'].isin(['AM','PM','Noche'])])
-            })
-        st.table(pd.DataFrame(resumen))
+        # Auditoría (Siempre visible al final)
+        with st.expander("📊 Ver Auditoría Detallada"):
+            res = []
+            for e, g in df_final.groupby("Empleado"):
+                res.append({
+                    "Empleado": e, "Contrato": g['Contrato'].iloc[0].upper(),
+                    "Desc. Contrato": len(g[g['Turno']=='DESC. CONTRATO']),
+                    "Desc. L-V": len(g[g['Turno']=='DESC. L-V']),
+                    "DISPO": len(g[g['Turno']=='DISPO']),
+                    "Trabajados": len(g[g['Turno'].isin(['AM','PM','Noche'])])
+                })
+            st.table(pd.DataFrame(res))
     else:
-        st.error("No se pudo balancear. Prueba bajando ligeramente el cupo o el mínimo de días laborados.")
+        st.error("No se pudo generar la malla.")
