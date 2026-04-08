@@ -6,7 +6,7 @@ from datetime import datetime
 
 st.set_page_config(page_title="Programador Pro 2026", layout="wide")
 
-st.title("🗓️ Programación Inteligente: Higiene del Sueño y Auditoría")
+st.title("🗓️ Programación con Estilo y Nombres de Día")
 
 # --- 1. CARGA DE DATOS ---
 try:
@@ -29,66 +29,53 @@ with st.sidebar:
     meses_n = ["Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio", "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"]
     mes_sel = st.selectbox("Mes", meses_n, index=datetime.now().month - 1)
     mes_num = meses_n.index(mes_sel) + 1
-    
     cargo_sel = st.selectbox("Filtrar por Cargo", sorted(df[col_car].unique()))
     cupo_manual = st.number_input("Cupo objetivo por turno", value=2)
-    
-    st.divider()
-    st.info("Regla: No se permite pasar de NOCHE a AM/PM, ni de PM a AM al día siguiente.")
 
 # --- 3. LÓGICA DE CALENDARIO ---
 num_dias = calendar.monthrange(ano_sel, mes_num)[1]
-dias_mes = [{"n": d, "nombre": ["Lunes", "Martes", "Miercoles", "Jueves", "Viernes", "Sabado", "Domingo"][datetime(ano_sel, mes_num, d).weekday()]} for d in range(1, num_dias + 1)]
+dias_mes = [{"n": d, "nombre": ["Lun", "Mar", "Mie", "Jue", "Vie", "Sab", "Dom"][datetime(ano_sel, mes_num, d).weekday()]} for d in range(1, num_dias + 1)]
+lista_columnas_bonitas = [f"{d['n']} - {d['nombre']}" for d in dias_mes]
 
 # --- 4. MOTOR DE OPTIMIZACIÓN ---
-if st.button(f"🚀 Generar Malla y Auditoría {mes_sel}"):
+if st.button(f"🚀 Generar Malla Estilizada {mes_sel}"):
     df_f = df[df[col_car] == cargo_sel].copy()
     turnos = ["AM", "PM", "Noche"]
-    prob = LpProblem("Malla_Higiene_Sueno", LpMaximize)
+    prob = LpProblem("Malla_Estilo", LpMaximize)
     asig = LpVariable.dicts("Asig", (df_f[col_nom], range(1, num_dias + 1), turnos), cat='Binary')
 
-    # OBJETIVO: Maximizar cobertura operativa
     prob += lpSum([asig[e][d][t] for e in df_f[col_nom] for d in range(1, num_dias + 1) for t in turnos])
 
-    # Restricciones de Cupo
     for d_i in dias_mes:
         d = d_i["n"]
         for t in turnos:
             prob += lpSum([asig[e][d][t] for e in df_f[col_nom]]) <= cupo_manual
 
-    # Restricciones por Empleado
     for _, row in df_f.iterrows():
         e, contrato = row[col_nom], row[col_des]
-        dia_c = "Sabado" if "sabado" in contrato else "Domingo"
+        dia_c_nom = "Sab" if "sabado" in contrato else "Dom"
         
         for d in range(1, num_dias + 1):
             prob += lpSum([asig[e][d][t] for t in turnos]) <= 1
-            
-            # HIGIENE DEL SUEÑO
-            if d < num_dias:
+            if d < num_dias: # Higiene del sueño
                 prob += asig[e][d]["Noche"] + asig[e][d+1]["AM"] <= 1
                 prob += asig[e][d]["Noche"] + asig[e][d+1]["PM"] <= 1
                 prob += asig[e][d]["PM"] + asig[e][d+1]["AM"] <= 1
 
-        # Días laborales totales (Reforma Laboral)
         prob += lpSum([asig[e][d][t] for d in range(1, num_dias + 1) for t in turnos]) == int((num_dias / 7) * 5)
-        
-        # Descansos Finde (Exactamente 2 libres)
-        d_f_m = [di["n"] for di in dias_mes if di["nombre"] == dia_c]
+        d_f_m = [di["n"] for di in dias_mes if di["nombre"] == dia_c_nom]
         prob += lpSum([asig[e][d][t] for d in d_f_m for t in turnos]) == (len(d_f_m) - 2)
 
     prob.solve(PULP_CBC_CMD(msg=0))
 
     if LpStatus[prob.status] == 'Optimal':
-        # Procesamiento para asignar DESCANSO y DISPO
+        # Procesamiento
         lista_final = []
-        for emp, grupo in pd.DataFrame([{"Dia": d["n"], "Nombre": d["nombre"], "Empleado": e, "Contrato": df_f[df_f[col_nom]==e][col_des].values[0], "Turno": next((t for t in turnos if value(asig[e][d["n"]][t]) == 1), "---")} for d in dias_mes for e in df_f[col_nom]]).groupby("Empleado"):
+        for emp, grupo in pd.DataFrame([{"Dia_Num": d["n"], "Dia_Label": f"{d['n']} - {d['nombre']}", "Nombre_Dia": d["nombre"], "Empleado": e, "Contrato": df_f[df_f[col_nom]==e][col_des].values[0], "Turno": next((t for t in turnos if value(asig[e][d["n"]][t]) == 1), "---")} for d in dias_mes for e in df_f[col_nom]]).groupby("Empleado"):
             grupo = grupo.copy()
-            dia_c = "Sabado" if "sabado" in grupo['Contrato'].iloc[0] else "Domingo"
-            
-            idx_libres_f = grupo[(grupo['Turno'] == '---') & (grupo['Nombre'] == dia_c)].head(2).index
+            dia_c_nom = "Sab" if "sabado" in grupo['Contrato'].iloc[0] else "Dom"
+            idx_libres_f = grupo[(grupo['Turno'] == '---') & (grupo['Nombre_Dia'] == dia_c_nom)].head(2).index
             grupo.loc[idx_libres_f, 'Turno'] = 'DESCANSO'
-            
             max_libres = num_dias - int((num_dias / 7) * 5)
             idx_restantes = grupo[grupo['Turno'] == '---'].index
             for idx in idx_restantes:
@@ -100,39 +87,34 @@ if st.button(f"🚀 Generar Malla y Auditoría {mes_sel}"):
 
         df_f_final = pd.concat(lista_final).reset_index(drop=True)
 
-        # --- VISUALIZACIÓN ---
+        # --- VISUALIZACIÓN CON COLOR ---
         st.success(f"✅ Malla generada para {cargo_sel}")
         
-        tab1, tab2, tab3 = st.tabs(["📅 Malla Mensual", "👤 Auditoría Individual", "🛡️ Cobertura"])
+        df_f_final['ID'] = df_f_final['Empleado'] + " (" + df_f_final['Contrato'].str.upper() + ")"
+        malla_p = df_f_final.pivot(index='ID', columns='Dia_Label', values='Turno')
+        
+        # Reordenar columnas para que sigan el orden 1, 2, 3...
+        malla_p = malla_p.reindex(columns=lista_columnas_bonitas)
 
-        with tab1:
-            df_f_final['ID'] = df_f_final['Empleado'] + " (" + df_f_final['Contrato'].str.upper() + ")"
-            malla_p = df_f_final.pivot(index='ID', columns='Dia', values='Turno')
-            st.dataframe(malla_p.reindex(columns=range(1, num_dias + 1)), use_container_width=True)
+        # Función para dar color
+        def color_descanso(val):
+            if val == 'DESCANSO':
+                return 'background-color: #ffcccc; color: #cc0000; font-weight: bold' # Rojo suave
+            if val == 'DISPO':
+                return 'background-color: #e6f3ff; color: #004080' # Azul suave
+            return ''
 
-        with tab2:
-            st.subheader("📋 Resumen por Persona")
+        st.subheader("📅 Malla Mensual Detallada")
+        st.dataframe(malla_p.style.applymap(color_descanso), use_container_width=True)
+        
+        # --- MÉTRICAS ---
+        with st.expander("📊 Ver Auditoría de Cumplimiento"):
             auditoria = []
             for e, g in df_f_final.groupby("Empleado"):
-                c = g['Contrato'].iloc[0]
-                d_c = "Sabado" if "sabado" in c else "Domingo"
                 auditoria.append({
-                    "Empleado": e, "Contrato": c.upper(),
-                    "Libres Finde": f"{len(g[(g['Nombre']==d_c) & (g['Turno']=='DESCANSO')])}/2",
-                    "Compensatorios L-V": len(g[(~g['Nombre'].isin(['Sabado','Domingo'])) & (g['Turno']=='DESCANSO')]),
-                    "Días DISPO": len(g[g['Turno'] == 'DISPO'])
+                    "Empleado": e, "Descansos Finde": f"{len(g[g['Turno']=='DESCANSO' & g['Nombre_Dia'].isin(['Sab','Dom'])])}/2",
+                    "Días Laborados": len(g[g['Turno'].isin(['AM','PM','Noche'])])
                 })
             st.table(pd.DataFrame(auditoria))
-
-        with tab3:
-            st.subheader("🚩 Faltantes por Turno")
-            faltantes = []
-            for d_i in dias_mes:
-                for t in turnos:
-                    c = len(df_f_final[(df_f_final['Dia']==d_i['n']) & (df_f_final['Turno']==t)])
-                    if c < cupo_manual:
-                        faltantes.append({"Dia": d_i['n'], "Turno": t, "Faltan": cupo_manual - c})
-            if faltantes: st.warning("Turnos incompletos"); st.table(pd.DataFrame(faltantes))
-            else: st.success("¡Cobertura completa!")
     else:
-        st.error("❌ No hay solución lógica. Revisa los cupos o el personal.")
+        st.error("❌ No hay solución lógica.")
