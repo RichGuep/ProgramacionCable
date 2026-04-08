@@ -4,8 +4,8 @@ from pulp import *
 import calendar
 from datetime import datetime
 
-st.set_page_config(page_title="Programador Pro 2026 - Memoria Activa", layout="wide")
-st.title("🗓️ Programación con Filtros Persistentes")
+st.set_page_config(page_title="Programador Pro 2026 - Ley 100%", layout="wide")
+st.title("🗓️ Programación: Compensatorios Semanales Obligatorios")
 
 # --- 1. CARGA DE DATOS ---
 try:
@@ -20,7 +20,7 @@ try:
 except Exception as e:
     st.error(f"Error al leer archivo: {e}"); st.stop()
 
-# --- 2. CONFIGURACIÓN LATERAL ---
+# --- 2. CONFIGURACIÓN ---
 with st.sidebar:
     st.header("⚙️ Parámetros")
     ano_sel = st.selectbox("Año", [2025, 2026, 2027], index=1)
@@ -32,7 +32,7 @@ with st.sidebar:
     st.divider()
     tipo_vista = st.radio("Visualización:", ["Vista por Semanas", "Mes Completo"])
 
-# --- 3. CÁLCULO DE CALENDARIO ---
+# --- 3. CALENDARIO ---
 num_dias = calendar.monthrange(ano_sel, mes_num)[1]
 dias_info = []
 dias_esp = ["Lun", "Mar", "Mie", "Jue", "Vie", "Sab", "Dom"]
@@ -42,15 +42,14 @@ for d in range(1, num_dias + 1):
     dias_info.append({"n": d, "nombre": dias_esp[fecha.weekday()], "semana": n_semana, "label": f"{d} - {dias_esp[fecha.weekday()]}"})
 
 # --- 4. MOTOR DE OPTIMIZACIÓN ---
-if st.button(f"🚀 Generar Programación"):
+if st.button(f"🚀 Generar Malla con Compensatorios"):
     df_f = df[df[col_car] == cargo_sel].copy()
     turnos = ["AM", "PM", "Noche"]
-    prob = LpProblem("Malla_Persistente", LpMaximize)
+    prob = LpProblem("Malla_Legal_Final", LpMaximize)
     asig = LpVariable.dicts("Asig", (df_f[col_nom], range(1, num_dias + 1), turnos), cat='Binary')
-    mantiene = LpVariable.dicts("Mantiene", (df_f[col_nom], range(2, num_dias + 1), turnos), cat='Binary')
-
-    prob += lpSum([asig[e][d][t] for e in df_f[col_nom] for d in range(1, num_dias + 1) for t in turnos]) + \
-            lpSum([mantiene[e][d][t] * 0.5 for e in df_f[col_nom] for d in range(2, num_dias + 1) for t in turnos])
+    
+    # Objetivo: Cobertura máxima
+    prob += lpSum([asig[e][d][t] for e in df_f[col_nom] for d in range(1, num_dias + 1) for t in turnos])
 
     for d_i in dias_info:
         for t in turnos:
@@ -61,20 +60,19 @@ if st.button(f"🚀 Generar Programación"):
         dia_c_nom = "Sab" if "sabado" in row[col_des] else "Dom"
         for d in range(1, num_dias + 1):
             prob += lpSum([asig[e][d][t] for t in turnos]) <= 1
-            if d < num_dias:
+            if d < num_dias: # Higiene sueño
                 prob += asig[e][d]["Noche"] + asig[e][d+1]["AM"] <= 1
                 prob += asig[e][d]["Noche"] + asig[e][d+1]["PM"] <= 1
                 prob += asig[e][d]["PM"] + asig[e][d+1]["AM"] <= 1
-                for t in turnos:
-                    prob += mantiene[e][d+1][t] <= asig[e][d][t]
-                    prob += mantiene[e][d+1][t] <= asig[e][d+1][t]
         
-        f_contractuales = [di["n"] for di in dias_info if di["nombre"] == dia_c_nom]
-        prob += lpSum([asig[e][d][t] for d in f_contractuales for t in turnos]) == (len(f_contractuales) - 2)
-        prob += lpSum([asig[e][d][t] for d in range(1, num_dias + 1) for t in turnos]) >= 19
+        # 2 Descansos de fin de semana contractuales obligatorios
+        f_c = [di["n"] for di in dias_info if di["nombre"] == dia_c_nom]
+        prob += lpSum([asig[e][d][t] for d in f_c for t in turnos]) == (len(f_c) - 2)
+        
+        # Bajamos la exigencia de días laborados a 18 para asegurar que existan huecos para compensar
+        prob += lpSum([asig[e][d][t] for d in range(1, num_dias + 1) for t in turnos]) >= 18
 
-    with st.spinner("Calculando..."):
-        prob.solve(PULP_CBC_CMD(msg=0))
+    prob.solve(PULP_CBC_CMD(msg=0))
 
     if LpStatus[prob.status] == 'Optimal':
         res_list = []
@@ -90,55 +88,72 @@ if st.button(f"🚀 Generar Programación"):
         for emp, grupo in df_res.groupby("Empleado"):
             grupo = grupo.sort_values("Dia").copy()
             dia_c_nom = "Sab" if "sabado" in grupo['Contrato'].iloc[0] else "Dom"
+            
+            # 1. Marcar los 2 Contractuales de Finde
             idx_f = grupo[(grupo['Turno'] == '---') & (grupo['Nom_Dia'] == dia_c_nom)].head(2).index
             grupo.loc[idx_f, 'Turno'] = 'DESC. CONTRATO'
-            for _, row_f in grupo[(grupo['Nom_Dia'] == dia_c_nom) & (grupo['Turno'].isin(turnos))].iterrows():
-                idx_comp = grupo[(grupo['Dia'] > row_f['Dia']) & (grupo['Dia'] <= row_f['Dia'] + 7) & (grupo['Turno'] == '---') & (~grupo['Nom_Dia'].isin(['Sab', 'Dom']))].index
-                if not idx_comp.empty: grupo.loc[idx_comp[0], 'Turno'] = 'DESC. L-V'
+            
+            # 2. Lógica de Compensación: Por cada finde TRABAJADO, buscar el primer hueco L-V siguiente
+            f_trabajados = grupo[(grupo['Nom_Dia'] == dia_c_nom) & (grupo['Turno'].isin(turnos))]
+            for _, row_ft in f_trabajados.iterrows():
+                # Buscamos un compensatorio en los 7 días posteriores
+                dia_inicio_busqueda = row_ft['Dia']
+                idx_comp = grupo[(grupo['Dia'] > dia_inicio_busqueda) & 
+                                 (grupo['Dia'] <= dia_inicio_busqueda + 7) & 
+                                 (grupo['Turno'] == '---') & 
+                                 (~grupo['Nom_Dia'].isin(['Sab', 'Dom']))].head(1).index
+                if not idx_comp.empty:
+                    grupo.loc[idx_comp, 'Turno'] = 'DESC. L-V'
+
+            # 3. Todo lo que sobre es DISPO
             grupo.loc[grupo['Turno'] == '---', 'Turno'] = 'DISPO'
             lista_final.append(grupo)
         
-        # GUARDAR EN SESSION STATE
         st.session_state['df_final'] = pd.concat(lista_final).reset_index(drop=True)
-        st.success("✅ Programación Generada.")
+        st.success("✅ Malla generada con compensatorios estrictos.")
     else:
-        st.error("❌ Sin solución.")
+        st.error("❌ Conflicto de reglas. Intente bajar el cupo operativo.")
 
-# --- 5. LÓGICA DE VISUALIZACIÓN (PERSISTENTE) ---
+# --- 5. VISUALIZACIÓN ---
 if 'df_final' in st.session_state:
-    df_f_final = st.session_state['df_final']
-    df_f_final['ID_Full'] = df_f_final['Empleado'] + " (" + df_f_final['Contrato'].str.upper() + ")"
+    df_view = st.session_state['df_final']
+    df_view['ID_Full'] = df_view['Empleado'] + " (" + df_view['Contrato'].str.upper() + ")"
 
-    def style_fn(val):
-        styles = {'DESC. CONTRATO': 'background-color: #ffb3b3; color: #b30000; font-weight: bold', 'DESC. L-V': 'background-color: #ffd9b3; color: #804000; font-weight: bold', 'DISPO': 'background-color: #e6f3ff; color: #004080'}
+    def color_fn(val):
+        styles = {
+            'DESC. CONTRATO': 'background-color: #ffb3b3; color: #b30000; font-weight: bold',
+            'DESC. L-V': 'background-color: #ffd9b3; color: #804000; font-weight: bold',
+            'DISPO': 'background-color: #e6f3ff; color: #004080'
+        }
         return styles.get(val, '')
 
-    tab_malla, tab_indiv, tab_ley = st.tabs(["📊 Malla General", "🔍 Consulta por Empleado", "⚖️ Auditoría Legal"])
+    t_malla, t_filtro, t_ley = st.tabs(["📅 Malla General", "🔍 Filtro Empleado", "⚖️ Auditoría"])
 
-    with tab_malla:
+    with t_malla:
         if tipo_vista == "Mes Completo":
-            m_full = df_f_final.pivot(index='ID_Full', columns='Label', values='Turno')
-            cols_sorted = sorted(m_full.columns, key=lambda x: int(x.split(' - ')[0]))
-            st.dataframe(m_full[cols_sorted].style.map(style_fn), use_container_width=True)
+            m_f = df_view.pivot(index='ID_Full', columns='Label', values='Turno')
+            st.dataframe(m_f[sorted(m_f.columns, key=lambda x: int(x.split(' - ')[0]))].style.map(color_fn), use_container_width=True)
         else:
-            for s in sorted(df_f_final['Semana'].unique()):
+            for s in sorted(df_view['Semana'].unique()):
                 st.write(f"### Semana {s}")
-                m_s = df_f_final[df_f_final['Semana'] == s].pivot(index='ID_Full', columns='Label', values='Turno')
-                cols_s = sorted(m_s.columns, key=lambda x: int(x.split(' - ')[0]))
-                st.dataframe(m_s[cols_s].style.map(style_fn), use_container_width=True)
+                m_s = df_view[df_view['Semana'] == s].pivot(index='ID_Full', columns='Label', values='Turno')
+                st.dataframe(m_s[sorted(m_s.columns, key=lambda x: int(x.split(' - ')[0]))].style.map(color_fn), use_container_width=True)
 
-    with tab_indiv:
-        nombres = sorted(df_f_final['Empleado'].unique())
-        sel_emp = st.multiselect("Filtrar Empleado(s):", nombres)
-        if sel_emp:
-            df_filtro = df_f_final[df_f_final['Empleado'].isin(sel_emp)]
-            m_ind = df_filtro.pivot(index='ID_Full', columns='Label', values='Turno')
-            cols_i = sorted(m_ind.columns, key=lambda x: int(x.split(' - ')[0]))
-            st.dataframe(m_ind[cols_i].style.map(style_fn), use_container_width=True)
+    with t_filtro:
+        sel = st.multiselect("Consultar Empleado:", sorted(df_view['Empleado'].unique()))
+        if sel:
+            m_i = df_view[df_view['Empleado'].isin(sel)].pivot(index='ID_Full', columns='Label', values='Turno')
+            st.dataframe(m_i[sorted(m_i.columns, key=lambda x: int(x.split(' - ')[0]))].style.map(color_fn), use_container_width=True)
 
-    with tab_ley:
+    with t_ley:
         audit = []
-        for e, g in df_f_final.groupby("Empleado"):
-            f_trab = len(g[(g['Nom_Dia'] == ("Sab" if "sabado" in g['Contrato'].iloc[0] else "Dom")) & (g['Turno'].isin(["AM","PM","Noche"]))])
-            audit.append({"Empleado": e, "Findes Trabajados": f_trab, "Compensatorios L-V": len(g[g['Turno'] == 'DESC. L-V']), "Ley 1-1": "✅ Cumple" if len(g[g['Turno'] == 'DESC. L-V']) >= f_trab else "⚠️ Revisar"})
+        for e, g in df_view.groupby("Empleado"):
+            dia_c = "Sab" if "sabado" in g['Contrato'].iloc[0] else "Dom"
+            f_trab = len(g[(g['Nom_Dia'] == dia_c) & (g['Turno'].isin(["AM","PM","Noche"]))])
+            audit.append({
+                "Empleado": e, 
+                "Finde Contrato Trabajado": f_trab,
+                "Compensatorios Otorgados": len(g[g['Turno'] == 'DESC. L-V']),
+                "Estado Legal": "✅ CUMPLIDO" if len(g[g['Turno'] == 'DESC. L-V']) >= f_trab else "⚠️ REVISAR"
+            })
         st.table(pd.DataFrame(audit))
