@@ -4,8 +4,8 @@ from pulp import *
 import calendar
 from datetime import datetime
 
-st.set_page_config(page_title="Programador Pro - Gestión DISPO", layout="wide")
-st.title("🗓️ Programación con Prioridad de Disponibilidad (DISPO)")
+st.set_page_config(page_title="Programador Pro CableMovil", layout="wide")
+st.title("🗓️ Programación Cablemovil")
 
 # --- 1. CARGA ---
 try:
@@ -35,15 +35,13 @@ num_dias = calendar.monthrange(ano_sel, mes_num)[1]
 dias_mes = [{"n": d, "nombre": ["Lunes", "Martes", "Miercoles", "Jueves", "Viernes", "Sabado", "Domingo"][datetime(ano_sel, mes_num, d).weekday()]} for d in range(1, num_dias + 1)]
 
 if st.button(f"🚀 Generar Malla con DISPO"):
-    df_f = df[df[col_car] == cargo_sel]
+    df_f = df[df[col_car] == cargo_sel].copy()
     turnos = ["AM", "PM", "Noche"]
     prob = LpProblem("Prioridad_DISPO", LpMaximize)
     asig = LpVariable.dicts("Asig", (df_f[col_nom], range(1, num_dias + 1), turnos), cat='Binary')
 
-    # Función Objetivo: Maximizar turnos + penalizar descansos innecesarios
     prob += lpSum([asig[e][d][t] for e in df_f[col_nom] for d in range(1, num_dias + 1) for t in turnos])
 
-    # Restricciones
     for d_i in dias_mes:
         d = d_i["n"]
         for t in turnos:
@@ -52,17 +50,12 @@ if st.button(f"🚀 Generar Malla con DISPO"):
     for _, row in df_f.iterrows():
         e, contrato = row[col_nom], row[col_des]
         dia_c = "Sabado" if "sabado" in contrato else "Domingo"
-        
         for d in range(1, num_dias + 1):
             prob += lpSum([asig[e][d][t] for t in turnos]) <= 1
-            if d < num_dias: # Descanso Biológico
+            if d < num_dias:
                 prob += asig[e][d]["Noche"] + asig[e][d+1]["AM"] <= 1
                 prob += asig[e][d]["Noche"] + asig[e][d+1]["PM"] <= 1
-
-        # TRABAJO TOTAL: 5 días laborables por semana
         prob += lpSum([asig[e][d][t] for d in range(1, num_dias + 1) for t in turnos]) == int((num_dias / 7) * 5)
-        
-        # DESCANSOS FIN DE SEMANA: Exactamente 2
         d_c_m = [di["n"] for di in dias_mes if di["nombre"] == dia_c]
         prob += lpSum([asig[e][d][t] for d in d_c_m for t in turnos]) == (len(d_c_m) - 2)
 
@@ -76,53 +69,52 @@ if st.button(f"🚀 Generar Malla con DISPO"):
                 t_asig = "---"
                 for t in turnos:
                     if value(asig[e][d][t]) == 1: t_asig = t
-                res.append({"Dia": d, "Nombre": d_i["nombre"], "Empleado": e, "Turno": t_asig, "Contrato": df_f[df_f[col_nom]==e][col_des].values[0]})
+                res.append({
+                    "Dia": d, 
+                    "Nombre": d_i["nombre"], 
+                    "Empleado": e, 
+                    "Turno": t_asig, 
+                    "Contrato": df_f[df_f[col_nom]==e][col_des].values[0]
+                })
         
         df_res = pd.DataFrame(res)
         
-        # --- LÓGICA DE IDENTIFICACIÓN DE DISPO ---
-        def procesar_estado(grupo):
-            # Identificamos quiénes NO tienen turno asignado
+        # --- NUEVO PROCESAMIENTO (MÁS SEGURO) ---
+        lista_final = []
+        for emp_name, grupo in df_res.groupby("Empleado"):
+            grupo = grupo.copy()
             sin_turno = grupo[grupo['Turno'] == '---']
             contrato = grupo['Contrato'].iloc[0]
             dia_c = "Sabado" if "sabado" in contrato else "Domingo"
             
-            # Buscamos sus 2 descansos de fin de semana contractuales
-            libres_finde = sin_turno[sin_turno['Nombre'] == dia_c].head(2).index
-            grupo.loc[libres_finde, 'Turno'] = 'DESCANSO'
+            # 2 Descansos contractuales
+            libres_f_indices = sin_turno[sin_turno['Nombre'] == dia_c].head(2).index
+            grupo.loc[libres_f_indices, 'Turno'] = 'DESCANSO'
             
-            # Buscamos sus compensatorios L-V necesarios para llegar a los 8 libres del mes
-            libres_restantes = sin_turno[~sin_turno.index.isin(libres_finde)].index
-            # Los primeros que encuentre hasta completar 8 días libres totales son DESCANSO
-            # El resto se marcan como DISPO
-            for idx in libres_restantes:
-                conteo_descansos = len(grupo[grupo['Turno'] == 'DESCANSO'])
-                if conteo_descansos < 8:
+            # El resto de libres hasta completar 8 (para mes de 4 sem) o proporcional
+            max_libres = num_dias - int((num_dias / 7) * 5)
+            
+            indices_restantes = grupo[grupo['Turno'] == '---'].index
+            for idx in indices_restantes:
+                if len(grupo[grupo['Turno'] == 'DESCANSO']) < max_libres:
                     grupo.loc[idx, 'Turno'] = 'DESCANSO'
                 else:
                     grupo.loc[idx, 'Turno'] = 'DISPO'
-            return grupo
+            
+            lista_final.append(grupo)
 
-        df_final = df_res.groupby('Empleado', group_keys=False).apply(procesar_estado)
+        df_final = pd.concat(lista_final).reset_index(drop=True)
 
         # --- VISUALIZACIÓN ---
-        st.subheader(f"Malla de {mes_sel} con Turnos, Descansos y DISPO")
         df_final['ID'] = df_final['Empleado'] + " (" + df_final['Contrato'].str.upper() + ")"
         malla_pivot = df_final.pivot(index='ID', columns='Dia', values='Turno')
         st.dataframe(malla_pivot.reindex(columns=range(1, num_dias + 1)), use_container_width=True)
         
-        # Auditoría de Cobertura
+        # Auditoría simple
         st.divider()
-        st.subheader("🏭 Resumen de Cobertura Diaria")
-        cob_list = []
-        for d_i in dias_mes:
-            d = d_i["n"]
-            for t in turnos:
-                c = len(df_final[(df_final['Dia']==d) & (df_final['Turno']==t)])
-                if c < cupo_manual:
-                    cob_list.append({"Día": d, "Nombre": d_i["nombre"], "Turno": t, "Estado": f"Faltan {cupo_manual-c}"})
-        if cob_list: st.warning("Turnos incompletos encontrados"); st.table(pd.DataFrame(cob_list))
-        else: st.success("¡Cobertura completa!")
-
+        st.subheader("🏭 Cobertura Lograda")
+        for t in turnos:
+            c_t = len(df_final[df_final['Turno'] == t])
+            st.write(f"Turno {t}: {c_t} asignaciones en el mes.")
     else:
-        st.error("No hay solución para este mes.")
+        st.error("No hay solución.")
