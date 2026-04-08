@@ -1,109 +1,125 @@
 import streamlit as st
 import pandas as pd
-import plotly.express as px
-from datetime import datetime
-import processor
+from pulp import *
 
-ADMIN_EMAIL = "richard.guevara@greenmovil.com.co"
-st.set_page_config(page_title="NexOp | Green Móvil", layout="wide", page_icon="⚡")
+st.set_page_config(page_title="Programador Pro 2026", layout="wide")
 
-# --- ESTILO CORPORATIVO ---
-st.markdown("""
-    <style>
-    @import url('https://fonts.cdnfonts.com/css/century-gothic');
-    * { font-family: 'Century Gothic', sans-serif !important; }
-    .stApp { background-color: #fcfdfc; }
-    .main-header {
-        background: linear-gradient(90deg, #1a531f 0%, #2e7d32 100%);
-        padding: 20px; border-radius: 12px; color: white; text-align: center; margin-bottom: 25px;
-    }
-    .stMetric { background-color: #ffffff; padding: 15px; border-radius: 10px; border-left: 5px solid #1a531f; box-shadow: 0 2px 8px rgba(0,0,0,0.05); }
-    .stTabs [aria-selected="true"] { background-color: #1a531f !important; color: white !important; }
-    </style>
-    """, unsafe_allow_html=True)
+st.title("🗓️ Programador de Turnos Inteligente")
+st.markdown("Prioriza estabilidad de turnos, descansos biológicos y cumplimiento de la reforma laboral.")
 
-if "auth" not in st.session_state: st.session_state.auth = False
+# --- 1. CARGA DE DATOS ---
+try:
+    df = pd.read_excel("empleados.xlsx")
+    df.columns = df.columns.str.strip().str.lower()
+    col_nom = next((c for c in df.columns if 'nom' in c or 'emp' in c), None)
+    col_car = next((c for c in df.columns if 'car' in c), None)
+    col_des = next((c for c in df.columns if 'des' in c), None)
 
-# --- LOGIN ---
-if not st.session_state.auth:
-    c2 = st.columns([1,1.2,1])[1]
-    with c2:
-        st.markdown('<div class="main-header"><h1>NexOp Access</h1></div>', unsafe_allow_html=True)
-        u = st.text_input("Correo").lower().strip()
-        p = st.text_input("Contraseña", type="password").strip()
-        if st.button("INGRESAR", use_container_width=True):
-            users = processor.obtener_usuarios()
-            if u in users and str(users[u].get('pw')) == p:
-                st.session_state.auth = True; st.session_state.user_info = users[u]; st.rerun()
-            else: st.error("Acceso Denegado")
+    df[col_nom] = df[col_nom].astype(str).str.strip()
+    df[col_car] = df[col_car].astype(str).str.strip()
+    df[col_des] = df[col_des].astype(str).str.strip().str.lower()
+except Exception as e:
+    st.error(f"Error al leer el archivo: {e}")
     st.stop()
 
-# --- POPUP CON VALORES POR DEFECTO ---
-@st.dialog("🛠️ Gestión Operativa (PIR)", width="large")
-def ventana_gestion(viaje):
-    empresa = viaje.get('empresa', 'ZMO V')
-    prefijo = "Z63-" if empresa == "ZMO III" else "Z67-"
-    df_b = processor.obtener_listado_buses_drive()
-    lista_b = ["N/A"] + df_b[df_b['Código'].astype(str).str.startswith(prefijo)]['label'].tolist() if not df_b.empty else ["N/A"]
+# --- 2. FILTROS LATERALES ---
+with st.sidebar:
+    st.header("🔍 Panel de Control")
+    cargos_disponibles = sorted(df[col_car].unique())
+    cargo_sel = st.selectbox("Seleccione Cargo", cargos_disponibles)
     
-    # Pre-seleccionar el bus actual
-    try: idx_def = next(i for i, x in enumerate(lista_b) if str(viaje['bus_prog']) in x)
-    except: idx_def = 0
+    st.divider()
+    cupo_manual = st.number_input(f"Cupo por turno ({cargo_sel})", value=2 if "master" in cargo_sel.lower() else 7)
+    
+    total_cargo = len(df[df[col_car] == cargo_sel])
+    st.info(f"Personal disponible: {total_cargo}")
 
-    st.markdown(f"### Servicio: `{viaje['servbus']}` | Empresa: **{empresa}**")
-    with st.form("form_gestion"):
-        col1, col2 = st.columns(2)
-        with col1:
-            st.markdown("#### 🚌 Vehículo")
-            st.caption(f"Prog: {viaje['bus_prog']}")
-            bus_r = st.selectbox("Bus Real:", options=lista_b, index=idx_def)
-            mot_m = st.selectbox("Motivo:", ["Operación Normal", "RETOMA", "Falta movil", "Bus varado", "Accidente"])
-        with col2:
-            st.markdown("#### 👤 Operador")
-            st.caption(f"Prog: {viaje['ope_prog']}")
-            ope_r = st.text_input("Operador Real:", value=viaje['ope_prog'])
-            mot_o = st.selectbox("Motivo:", ["Operación Normal", "Falta operador", "Enfermo", "No llegó"])
-            elim_k = st.toggle("¿Eliminar Kilometraje?")
+# --- 3. MOTOR DE OPTIMIZACIÓN ---
+if st.button(f"🚀 Generar Programación para {cargo_sel}"):
+    df_f = df[df[col_car] == cargo_sel]
+    semanas = [1, 2, 3, 4]
+    dias = ["Lunes", "Martes", "Miercoles", "Jueves", "Viernes", "Sabado", "Domingo"]
+    turnos = ["AM", "PM", "Noche"]
+    
+    prob = LpProblem("Malla_Humana", LpMaximize)
+    asig = LpVariable.dicts("Asig", (df_f[col_nom], semanas, dias, turnos), cat='Binary')
+
+    # FUNCIÓN OBJETIVO: Maximizar cobertura
+    prob += lpSum([asig[e][s][d][t] for e in df_f[col_nom] for s in semanas for d in dias for t in turnos])
+
+    # RESTRICCIONES
+    for s in semanas:
+        for d_idx, d in enumerate(dias):
+            for t in turnos:
+                # Cupos máximos
+                prob += lpSum([asig[e][s][d][t] for e in df_f[col_nom]]) <= cupo_manual
+
+            # Restricciones por Empleado
+            for _, row in df_f.iterrows():
+                e = row[col_nom]
+                
+                # A. Solo un turno al día
+                prob += lpSum([asig[e][s][d][t] for t in turnos]) <= 1
+                
+                # B. DESCANSO BIOLÓGICO: Si ayer hizo NOCHE, hoy NO puede hacer AM ni PM
+                if d_idx > 0:
+                    ayer = dias[d_idx - 1]
+                    prob += asig[e][s][ayer]["Noche"] + asig[e][s][d]["AM"] <= 1
+                    prob += asig[e][s][ayer]["Noche"] + asig[e][s][d]["PM"] <= 1
+                
+                # C. Transición de semanas (Noche de Domingo a AM de Lunes)
+                if s > 1 and d == "Lunes":
+                    prob += asig[e][s-1]["Domingo"]["Noche"] + asig[e][s]["Lunes"]["AM"] <= 1
+
+        # D. Reforma: 5 días de labor por semana
+        for _, row in df_f.iterrows():
+            e = row[col_nom]
+            prob += lpSum([asig[e][s][d][t] for d in dias for t in turnos]) == 5
+            
+            # E. Regla de Oro: 2 descansos contractuales al mes
+            contrato = row[col_des]
+            dia_c = "Sabado" if "sabado" in contrato else "Domingo"
+            prob += lpSum([asig[e][s][dia_c][t] for s in semanas for t in turnos]) <= 2
+
+    # RESOLVER
+    prob.solve(PULP_CBC_CMD(msg=0))
+
+    if LpStatus[prob.status] == 'Optimal':
+        st.success(f"✅ Programación para {cargo_sel} generada con criterios de descanso biológico.")
         
-        obs = st.text_area("📝 Observación")
-        if st.form_submit_button("✅ GUARDAR CAMBIOS", use_container_width=True):
-            datos = {
-                "servbus": viaje['servbus'], "bus_prog": viaje['bus_prog'], 
-                "bus_real": bus_r.split(" | ")[0] if " | " in bus_r else bus_r,
-                "motivo_movil": mot_m, "ope_prog": viaje['ope_prog'],
-                "ope_real": ope_r, "motivo_ope": mot_o,
-                "eliminar_km": "SI" if elim_k else "NO", "obs_final": obs
-            }
-            if processor.aplicar_gestion_servicio(datos, st.session_state.user_info['nombre']):
-                st.success("¡Hecho!"); st.rerun()
+        # Procesamiento de resultados
+        res_list = []
+        for s in semanas:
+            for d in dias:
+                for e in df_f[col_nom]:
+                    t_asig = "DESCANSO"
+                    for t in turnos:
+                        if value(asig[e][s][d][t]) == 1:
+                            t_asig = t
+                    res_list.append({"Semana": s, "Dia": d, "Empleado": e, "Turno": t_asig})
+        
+        df_res = pd.DataFrame(res_list)
+        tabs = st.tabs([f"Semana {s}" for s in semanas])
+        
+        for i, s in enumerate(semanas):
+            with tabs[i]:
+                malla = df_res[df_res['Semana'] == s].pivot(index='Empleado', columns='Dia', values='Turno')
+                
+                # Lógica para DISPO (identificar el segundo día libre como Gestión)
+                def asignar_dispo(row):
+                    desc = [j for j, val in enumerate(row) if val == "DESCANSO"]
+                    if len(desc) >= 2:
+                        row.iloc[desc[1]] = "DISPO" # El segundo descanso se vuelve DISPO
+                    return row
 
-# --- APP LAYOUT ---
-st.markdown('<div class="main-header"><h1>NexOp | Green Móvil</h1></div>', unsafe_allow_html=True)
-df = processor.cargar_datos_pantalla()
-u_info = st.session_state.user_info
-is_admin = (u_info.get('correo') == ADMIN_EMAIL or str(u_info.get('rol')).lower() == 'admin')
-tabs = st.tabs(["📊 ESTADÍSTICAS", "🚀 GESTIÓN PIR", "📋 SEGUIMIENTO", "⚙️ CONFIG"] if is_admin else ["📊 ESTADÍSTICAS", "🚀 GESTIÓN PIR", "📋 SEGUIMIENTO"])
-
-st.sidebar.markdown(f"👤 **{u_info.get('nombre', 'Usuario')}**")
-
-if not df.empty:
-    st.sidebar.subheader("🔍 Filtros")
-    f_sel = st.sidebar.selectbox("📅 Día:", sorted(df['fecha'].unique().tolist()))
-    df_f = df[df['fecha'] == f_sel].copy()
-    
-    # Filtro Turno
-    df_f['temp_hora'] = pd.to_datetime(df_f['timeOrigin']).dt.hour
-    turno = st.sidebar.radio("⏱️ Turno:", ["Completo", "Mañana (06:00-14:00)", "Tarde (14:00-22:00)"])
-    if "Mañana" in turno: df_f = df_f[(df_f['temp_hora'] >= 6) & (df_f['temp_hora'] < 14)]
-    elif "Tarde" in turno: df_f = df_f[(df_f['temp_hora'] >= 14) & (df_f['temp_hora'] < 22)]
-
-    with tabs[1]: # GESTIÓN PIR
-        cols_v = ['timeOrigin', 'ruta', 'tabla', 'bus_prog', 'ope_prog', 'empresa', 'servbus']
-        sel = st.dataframe(df_f[cols_v], use_container_width=True, hide_index=True, on_select="rerun", selection_mode="single-row")
-        if sel.selection.rows:
-            ventana_gestion(df_f.iloc[sel.selection.rows[0]])
-
-if is_admin:
-    with tabs[-1]:
-        if st.button("🚀 SINCRONIZAR RIGEL"):
-            processor.sincronizar_semana_por_dias(str(st.date_input("I")), str(st.date_input("F")))
+                malla_visual = malla.apply(asignar_dispo, axis=1)
+                st.dataframe(malla_visual.reindex(columns=dias), use_container_width=True)
+                
+                # Métricas de cobertura
+                st.subheader("📊 Cobertura Lograda")
+                metrics = st.columns(7)
+                for idx, d in enumerate(dias):
+                    cob = (malla_visual[d].isin(["AM", "PM", "Noche"])).sum()
+                    metrics[idx].metric(d, f"{cob}/{cupo_manual*3}")
+    else:
+        st.error("❌ No hay solución lógica. El personal es insuficiente para las reglas biológicas.")
