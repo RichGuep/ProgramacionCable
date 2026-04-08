@@ -6,7 +6,7 @@ from datetime import datetime
 
 st.set_page_config(page_title="Programador Pro 2026", layout="wide")
 
-st.title("🗓️ Programación Inteligente: Higiene del Sueño y Auditoría Operativa")
+st.title("🗓️ Programación Inteligente: Higiene del Sueño y Auditoría")
 
 # --- 1. CARGA DE DATOS ---
 try:
@@ -34,7 +34,7 @@ with st.sidebar:
     cupo_manual = st.number_input("Cupo objetivo por turno", value=2)
     
     st.divider()
-    st.info("Regla de Oro: No se permite pasar de NOCHE a AM/PM, ni de PM a AM al día siguiente.")
+    st.info("Regla: No se permite pasar de NOCHE a AM/PM, ni de PM a AM al día siguiente.")
 
 # --- 3. LÓGICA DE CALENDARIO ---
 num_dias = calendar.monthrange(ano_sel, mes_num)[1]
@@ -62,18 +62,16 @@ if st.button(f"🚀 Generar Malla y Auditoría {mes_sel}"):
         dia_c = "Sabado" if "sabado" in contrato else "Domingo"
         
         for d in range(1, num_dias + 1):
-            prob += lpSum([asig[e][d][t] for t in turnos]) <= 1 # Solo un turno al día
+            prob += lpSum([asig[e][d][t] for t in turnos]) <= 1
             
-            # --- HIGIENE DEL SUEÑO (CAMBIOS BRUSCOS) ---
+            # HIGIENE DEL SUEÑO
             if d < num_dias:
-                # 1. De NOCHE no puede pasar a AM ni PM (Necesita descanso largo)
                 prob += asig[e][d]["Noche"] + asig[e][d+1]["AM"] <= 1
                 prob += asig[e][d]["Noche"] + asig[e][d+1]["PM"] <= 1
-                # 2. De PM no puede pasar a AM (Necesita descanso mínimo de 12h)
                 prob += asig[e][d]["PM"] + asig[e][d+1]["AM"] <= 1
 
-        # Días laborales totales (Reforma: aprox 20-22 al mes)
-        prob += lpSum([asig[e][d][t] for d in range(1, num_dias + 1) for t in turnos rack in turnos]) == int((num_dias / 7) * 5)
+        # Días laborales totales (Reforma Laboral)
+        prob += lpSum([asig[e][d][t] for d in range(1, num_dias + 1) for t in turnos]) == int((num_dias / 7) * 5)
         
         # Descansos Finde (Exactamente 2 libres)
         d_f_m = [di["n"] for di in dias_mes if di["nombre"] == dia_c]
@@ -82,17 +80,15 @@ if st.button(f"🚀 Generar Malla y Auditoría {mes_sel}"):
     prob.solve(PULP_CBC_CMD(msg=0))
 
     if LpStatus[prob.status] == 'Optimal':
-        # --- PROCESAMIENTO DE ESTADOS (TURNO, DESCANSO, DISPO) ---
+        # Procesamiento para asignar DESCANSO y DISPO
         lista_final = []
         for emp, grupo in pd.DataFrame([{"Dia": d["n"], "Nombre": d["nombre"], "Empleado": e, "Contrato": df_f[df_f[col_nom]==e][col_des].values[0], "Turno": next((t for t in turnos if value(asig[e][d["n"]][t]) == 1), "---")} for d in dias_mes for e in df_f[col_nom]]).groupby("Empleado"):
             grupo = grupo.copy()
             dia_c = "Sabado" if "sabado" in grupo['Contrato'].iloc[0] else "Domingo"
             
-            # Asignar los 2 descansos contractuales
             idx_libres_f = grupo[(grupo['Turno'] == '---') & (grupo['Nombre'] == dia_c)].head(2).index
             grupo.loc[idx_libres_f, 'Turno'] = 'DESCANSO'
             
-            # Asignar compensatorios L-V hasta completar la cuota legal (8-10 días libres)
             max_libres = num_dias - int((num_dias / 7) * 5)
             idx_restantes = grupo[grupo['Turno'] == '---'].index
             for idx in idx_restantes:
@@ -102,40 +98,41 @@ if st.button(f"🚀 Generar Malla y Auditoría {mes_sel}"):
                     grupo.loc[idx, 'Turno'] = 'DISPO'
             lista_final.append(grupo)
 
-        df_f_final = pd.concat(lista_final)
+        df_f_final = pd.concat(lista_final).reset_index(drop=True)
 
-        # --- VISUALIZACIÓN Y MÉTRICAS ---
-        st.success(f"✅ Programación Generada para {cargo_sel} ({mes_sel} {ano_sel})")
+        # --- VISUALIZACIÓN ---
+        st.success(f"✅ Malla generada para {cargo_sel}")
         
-        tab_malla, tab_auditoria, tab_cupos = st.tabs(["📅 Malla Mensual", "👤 Auditoría Individual", "🛡️ Cobertura Operativa"])
+        tab1, tab2, tab3 = st.tabs(["📅 Malla Mensual", "👤 Auditoría Individual", "🛡️ Cobertura"])
 
-        with tab_malla:
+        with tab1:
             df_f_final['ID'] = df_f_final['Empleado'] + " (" + df_f_final['Contrato'].str.upper() + ")"
-            pivot_malla = df_f_final.pivot(index='ID', columns='Dia', values='Turno')
-            st.dataframe(pivot_malla.reindex(columns=range(1, num_dias + 1)), use_container_width=True)
+            malla_p = df_f_final.pivot(index='ID', columns='Dia', values='Turno')
+            st.dataframe(malla_p.reindex(columns=range(1, num_dias + 1)), use_container_width=True)
 
-        with tab_auditoria:
-            st.subheader("📋 Cumplimiento por Persona")
-            audit_data = []
+        with tab2:
+            st.subheader("📋 Resumen por Persona")
+            auditoria = []
             for e, g in df_f_final.groupby("Empleado"):
-                contrato = g['Contrato'].iloc[0]
-                dia_c = "Sabado" if "sabado" in contrato else "Domingo"
-                libres_c = len(g[(g['Nombre'] == dia_c) & (g['Turno'] == 'DESCANSO')])
-                compens = len(g[(~g['Nombre'].isin(["Sabado", "Domingo"])) & (g['Turno'] == 'DESCANSO')])
-                dispo = len(g[g['Turno'] == 'DISPO'])
-                audit_data.append({"Empleado": e, "Contrato": contrato.upper(), "Descansos Finde": f"{libres_c}/2", "Compensatorios L-V": compens, "Días DISPO": dispo})
-            st.table(pd.DataFrame(audit_data))
+                c = g['Contrato'].iloc[0]
+                d_c = "Sabado" if "sabado" in c else "Domingo"
+                auditoria.append({
+                    "Empleado": e, "Contrato": c.upper(),
+                    "Libres Finde": f"{len(g[(g['Nombre']==d_c) & (g['Turno']=='DESCANSO')])}/2",
+                    "Compensatorios L-V": len(g[(~g['Nombre'].isin(['Sabado','Domingo'])) & (g['Turno']=='DESCANSO')]),
+                    "Días DISPO": len(g[g['Turno'] == 'DISPO'])
+                })
+            st.table(pd.DataFrame(auditoria))
 
-        with tab_cupos:
-            st.subheader("🚩 Análisis de Faltantes por Turno")
+        with tab3:
+            st.subheader("🚩 Faltantes por Turno")
             faltantes = []
             for d_i in dias_mes:
                 for t in turnos:
-                    conteo = len(df_f_final[(df_final['Dia']==d_i['n']) & (df_final['Turno']==t)])
-                    if conteo < cupo_manual:
-                        faltantes.append({"Día": d_i['n'], "Día Nom": d_i['nombre'], "Turno": t, "Contados": conteo, "Faltante": cupo_manual - conteo})
-            if faltantes: st.warning("Existen turnos por debajo del cupo ideal."); st.dataframe(pd.DataFrame(faltantes), use_container_width=True)
-            else: st.success("¡Cobertura del 100% lograda!")
-
+                    c = len(df_f_final[(df_f_final['Dia']==d_i['n']) & (df_f_final['Turno']==t)])
+                    if c < cupo_manual:
+                        faltantes.append({"Dia": d_i['n'], "Turno": t, "Faltan": cupo_manual - c})
+            if faltantes: st.warning("Turnos incompletos"); st.table(pd.DataFrame(faltantes))
+            else: st.success("¡Cobertura completa!")
     else:
-        st.error("❌ No hay solución posible. Revisa si el personal es insuficiente para los descansos de fin de semana.")
+        st.error("❌ No hay solución lógica. Revisa los cupos o el personal.")
