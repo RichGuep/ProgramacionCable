@@ -19,6 +19,7 @@ MAPEO_PIR = {
     "Brisas 2": ["L329", "L312", "K324"]
 }
 
+# Listado exacto según imagen image_0396ca.png
 RUTAS_ZMO_III = ["H317", "L328", "B326", "H308", "L329", "L312", "K324"]
 RUTAS_ZMO_V = ["G311", "H327", "KA332", "L331", "B314", "H318", "L325"]
 
@@ -28,7 +29,7 @@ def obtener_usuarios():
     try:
         df = conn.read(worksheet="USUARIOS", ttl=0)
         df.columns = [str(c).lower().strip() for c in df.columns]
-        # Mapeo por posición: 0:correo, 1:nombre, 2:cargo, 3:pw, 4:rol, 5:tipo_contrato
+        # Mapeo: 0:correo, 1:nombre, 2:cargo, 3:pw, 4:rol, 5:tipo_contrato
         df = df.rename(columns={df.columns[0]: 'correo', df.columns[3]: 'pw', df.columns[4]: 'rol'})
         df['correo'] = df['correo'].astype(str).str.lower().str.strip()
         df['pw'] = df['pw'].astype(str).str.strip()
@@ -48,6 +49,7 @@ def obtener_listado_buses_drive():
 
 def aplicar_gestion_servicio(datos, usuario):
     try:
+        # 1. Historial GESTION_OPERATIVA
         try: df_hist = conn.read(worksheet="GESTION_OPERATIVA", ttl=0)
         except: df_hist = pd.DataFrame()
         nueva = pd.DataFrame([{
@@ -60,6 +62,7 @@ def aplicar_gestion_servicio(datos, usuario):
         }])
         conn.update(worksheet="GESTION_OPERATIVA", data=pd.concat([df_hist, nueva], ignore_index=True))
         
+        # 2. Actualizar PRG_MASTER
         df_master = conn.read(worksheet="PRG_MASTER", ttl=0)
         mask = df_master['servbus'].astype(str) == str(datos['servbus'])
         if mask.any():
@@ -92,7 +95,7 @@ def sincronizar_semana_por_dias(f_ini, f_fin):
     df_full = pd.concat(lista_total, ignore_index=True)
     df_full['ruta'] = df_full['tipoTarea'].astype(str).str.split('_').str[0].str.strip().str[:5]
     df_full['punto_pir'] = df_full['ruta'].apply(lambda x: next((k for k, v in MAPEO_PIR.items() if any(r in x for r in v)), "Otros"))
-    df_full['empresa'] = df_full['ruta'].apply(lambda x: "ZMO III" if x in RUTAS_ZMO_III else "ZMO V")
+    df_full['empresa'] = df_full['ruta'].apply(lambda x: "ZMO III" if x in RUTAS_ZMO_III else ("ZMO V" if x in RUTAS_ZMO_V else "Otros"))
     
     cols = ['fecha', 'servbus', 'timeOrigin', 'ruta', 'tabla', 'codigoBus', 'nombre', 'km', 'codigoTm', 'punto_pir', 'empresa']
     df_res = df_full[cols].rename(columns={'codigoBus': 'bus_prog', 'nombre': 'ope_prog'})
@@ -121,6 +124,10 @@ def calcular_metricas_rrhh(df_prg):
             sabs = prog_ope[prog_ope['dia_nombre'] == 'Saturday']['fecha'].nunique()
             doms = prog_ope[prog_ope['dia_nombre'] == 'Sunday']['fecha'].nunique()
             lv = prog_ope[~prog_ope['dia_nombre'].isin(['Saturday', 'Sunday'])]['fecha'].nunique()
-            resumen.append({"Operador": nombre, "Contrato": user.get('tipo_contrato', 'N/A'), "Sábados": sabs, "Domingos": doms, "Días L-V": lv, "Compensatorio": "SÍ" if (lv < 5 and (sabs > 0 or doms > 0)) else "NO"})
+            resumen.append({
+                "Operador": nombre, "Contrato": user.get('tipo_contrato', 'N/A'), 
+                "Sábados": sabs, "Domingos": doms, "Días L-V": lv, 
+                "Compensatorio": "SÍ" if (lv < 5 and (sabs > 0 or doms > 0)) else "NO"
+            })
         return pd.DataFrame(resumen)
     except: return pd.DataFrame()
