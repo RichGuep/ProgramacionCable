@@ -8,7 +8,7 @@ import os
 # --- 1. CONFIGURACIÓN DE PÁGINA ---
 st.set_page_config(page_title="MovilGo Pro", layout="wide", page_icon="⚡")
 
-# Definición global de turnos para acceso en todo el script
+# Definición global de turnos
 LISTA_TURNOS = ["AM", "PM", "Noche"]
 
 # --- 2. ESTILOS CORPORATIVOS (Century Gothic & UI Premium) ---
@@ -150,7 +150,7 @@ if df_raw is not None:
         prob = LpProblem("MovilGo_Core", LpMaximize)
         asig = LpVariable.dicts("Asig", (df_f['nombre'], range(1, num_dias + 1), LISTA_TURNOS), cat='Binary')
         
-        # Objetivo: Maximizar cobertura
+        # Objetivo
         prob += lpSum([asig[e][d][t] for e in df_f['nombre'] for d in range(1, num_dias + 1) for t in LISTA_TURNOS])
 
         for di in dias_info:
@@ -168,8 +168,8 @@ if df_raw is not None:
                     prob += asig[e][d]["PM"] + asig[e][d+1]["AM"] <= 1
             
             f_c = [di["n"] for di in dias_info if di["nombre"] == dia_c_nom]
-            prob += lpSum([asig[e][d][t] for d in f_c for t in LISTA_TURNOSfeatured]) == (len(f_c) - 2)
-            # Días laborados moderados para permitir compensación (Meta 17-18 días)
+            # LINEA CORREGIDA
+            prob += lpSum([asig[e][d][t] for d in f_c for t in LISTA_TURNOS]) == (len(f_c) - 2)
             prob += lpSum([asig[e][d][t] for d in range(1, num_dias + 1) for t in LISTA_TURNOS]) >= 17
 
         prob.solve(PULP_CBC_CMD(msg=0))
@@ -189,27 +189,25 @@ if df_raw is not None:
                 grupo = grupo.sort_values("Dia").copy()
                 dia_c_nom = "Sab" if "sabado" in grupo['Contrato'].iloc[0] else "Dom"
                 
-                # 1. Reservar Contractuales (2 por ley)
+                # 1. Contractuales
                 idx_f = grupo[(grupo['Turno'] == '---') & (grupo['Nom_Dia'] == dia_c_nom)].head(2).index
                 grupo.loc[idx_f, 'Turno'] = 'DESC. CONTRATO'
                 
-                # 2. Forzar Compensatorios L-V (Mandatorios)
+                # 2. Compensatorios L-V Mandatorios
                 findes_trab = grupo[(grupo['Nom_Dia'] == dia_c_nom) & (grupo['Turno'].isin(LISTA_TURNOS))]
                 for _, row_f in findes_trab.iterrows():
-                    # Buscar espacio vacío '---' en la semana siguiente (7 días L-V)
-                    ventana_comp = grupo[(grupo['Dia'] > row_f['Dia']) & (grupo['Dia'] <= row_f['Dia'] + 7) & 
-                                         (grupo['Turno'] == '---') & (~grupo['Nom_Dia'].isin(['Sab', 'Dom']))]
-                    if not ventana_comp.empty:
-                        grupo.loc[ventana_comp.head(1).index, 'Turno'] = 'DESC. L-V'
+                    ventana = grupo[(grupo['Dia'] > row_f['Dia']) & (grupo['Dia'] <= row_f['Dia'] + 7) & 
+                                     (grupo['Turno'] == '---') & (~grupo['Nom_Dia'].isin(['Sab', 'Dom']))]
+                    if not ventana.empty:
+                        grupo.loc[ventana.head(1).index, 'Turno'] = 'DESC. L-V'
                 
-                # 3. Lo que sobre es DISPO
+                # 3. DISPO
                 grupo.loc[grupo['Turno'] == '---', 'Turno'] = 'DISPO'
                 lista_final.append(grupo)
             
             st.session_state['df_final'] = pd.concat(lista_final).reset_index(drop=True)
-            st.success("✅ Malla Generada con Compensatorios Legales")
+            st.success("✅ Malla Generada")
 
-    # --- 5. RENDERIZADO ---
     if 'df_final' in st.session_state:
         df_v = st.session_state['df_final']
         df_v['ID_Full'] = df_v['Empleado'] + " (" + df_v['Contrato'].str.upper() + ")"
