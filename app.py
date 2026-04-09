@@ -8,20 +8,20 @@ import os
 # --- 1. CONFIGURACIÓN DE PÁGINA ---
 st.set_page_config(page_title="MovilGo Pro", layout="wide", page_icon="⚡")
 
+# Definición global de turnos para evitar NameError
+LISTA_TURNOS = ["AM", "PM", "Noche"]
+
 # --- 2. ESTILOS PREMIUM (Century Gothic & UI Corporativa) ---
 st.markdown("""
     <style>
     @import url('https://fonts.cdnfonts.com/css/century-gothic');
 
-    /* Fuente Global */
     html, body, [class*="st-"], div, span, p, text {
         font-family: 'Century Gothic', sans-serif !important;
     }
 
-    /* Fondo App */
     .stApp { background-color: #f8fafc; }
 
-    /* Login UI */
     .login-box {
         background-color: #ffffff;
         padding: 45px;
@@ -40,7 +40,6 @@ st.markdown("""
         margin-bottom: 2px;
     }
 
-    /* Alineación de Logos en el pie del Login */
     .logo-footer-container {
         display: flex;
         justify-content: center;
@@ -63,7 +62,6 @@ st.markdown("""
         transform: scale(1.05);
     }
 
-    /* Botones */
     div.stButton > button {
         background-color: #2563eb;
         color: white;
@@ -73,12 +71,7 @@ st.markdown("""
         transition: 0.3s;
         border: none;
     }
-    div.stButton > button:hover {
-        background-color: #1d4ed8;
-        transform: translateY(-2px);
-    }
 
-    /* Tabs */
     .stTabs [aria-selected="true"] {
         background-color: #1a365d !important;
         color: white !important;
@@ -97,7 +90,6 @@ def login_page():
         with col_login:
             st.markdown("<br><br>", unsafe_allow_html=True)
             
-            # Logo Principal o Título
             if os.path.exists("logo_movilgo.png"):
                 st.image("logo_movilgo.png", use_container_width=True)
             else:
@@ -120,26 +112,23 @@ def login_page():
                             st.error("Credenciales Incorrectas")
                 st.markdown("</div>", unsafe_allow_html=True)
 
-            # Logos del Grupo Empresarial abajo (Logo 3 al centro)
             st.markdown("<div class='logo-footer-container'>", unsafe_allow_html=True)
-            # Orden: Empresa 1 | Empresa 3 (Centro) | Empresa 2
             orden = ["logo_empresa_1.png", "logo_empresa_3.png", "logo_empresa_2.png"]
             for logo_p in orden:
                 if os.path.exists(logo_p):
-                    st.markdown(f"<img src='app/{logo_p}' class='normalized-logo'>", unsafe_allow_html=True)
+                    st.image(logo_p, width=120)
             st.markdown("</div>", unsafe_allow_html=True)
             
         st.stop()
 
 login_page()
 
-# --- 4. PANEL PRINCIPAL (POST-LOGIN) ---
+# --- 4. PANEL PRINCIPAL ---
 st.sidebar.markdown(f"### 👤 Admin: {st.session_state['user_name']}")
 if st.sidebar.button("Cerrar Sesión"):
     st.session_state['auth'] = False
     st.rerun()
 
-# --- CARGA DE DATOS ---
 @st.cache_data
 def load_data():
     try:
@@ -173,40 +162,35 @@ if df_raw is not None:
         n_sem = (d + fecha.replace(day=1).weekday() - 1) // 7 + 1
         dias_info.append({"n": d, "nombre": dias_esp[fecha.weekday()], "semana": n_sem, "label": f"{d} - {dias_esp[fecha.weekday()]}"})
 
-    # --- MOTOR DE OPTIMIZACIÓN ---
     if st.button("🚀 GENERAR PROGRAMACIÓN ÓPTIMA"):
         df_f = df_raw[df_raw['cargo'] == cargo_sel].copy()
-        turnos = ["AM", "PM", "Noche"]
         prob = LpProblem("MovilGo_Core", LpMaximize)
-        asig = LpVariable.dicts("Asig", (df_f['nombre'], range(1, num_dias + 1), turnos), cat='Binary')
-        mantiene = LpVariable.dicts("Mantiene", (df_f['nombre'], range(2, num_dias + 1), turnos), cat='Binary')
+        asig = LpVariable.dicts("Asig", (df_f['nombre'], range(1, num_dias + 1), LISTA_TURNOS), cat='Binary')
+        mantiene = LpVariable.dicts("Mantiene", (df_f['nombre'], range(2, num_dias + 1), LISTA_TURNOS), cat='Binary')
 
-        # Objetivo: Cobertura + Estabilidad de Turno
-        prob += lpSum([asig[e][d][t] for e in df_f['nombre'] for d in range(1, num_dias + 1) for t in turnos]) + \
-                lpSum([mantiene[e][d][t] * 0.5 for e in df_f['nombre'] for d in range(2, num_dias + 1) for t in turnos])
+        prob += lpSum([asig[e][d][t] for e in df_f['nombre'] for d in range(1, num_dias + 1) for t in LISTA_TURNOS]) + \
+                lpSum([mantiene[e][d][t] * 0.5 for e in df_f['nombre'] for d in range(2, num_dias + 1) for t in LISTA_TURNOS])
 
-        # Restricciones de cupo
         for di in dias_info:
-            for t in turnos:
+            for t in LISTA_TURNOS:
                 prob += lpSum([asig[e][di["n"]][t] for e in df_f['nombre']]) <= cupo_manual
 
         for _, row in df_f.iterrows():
             e, desc = row['nombre'], row['descripcion']
             dia_c = "Sab" if "sabado" in desc else "Dom"
             for d in range(1, num_dias + 1):
-                prob += lpSum([asig[e][d][t] for t in turnos]) <= 1
-                if d < num_dias: # Protección sueño y estabilidad
+                prob += lpSum([asig[e][d][t] for t in LISTA_TURNOS]) <= 1
+                if d < num_dias:
                     prob += asig[e][d]["Noche"] + asig[e][d+1]["AM"] <= 1
                     prob += asig[e][d]["Noche"] + asig[e][d+1]["PM"] <= 1
                     prob += asig[e][d]["PM"] + asig[e][d+1]["AM"] <= 1
-                    for t in turnos:
+                    for t in LISTA_TURNOS:
                         prob += mantiene[e][d+1][t] <= asig[e][d][t]
                         prob += mantiene[e][d+1][t] <= asig[e][d+1][t]
             
-            # Descansos legales de contrato (2 al mes)
             f_c = [di["n"] for di in dias_info if di["nombre"] == dia_c]
-            prob += lpSum([asig[e][d][t] for d in f_c for t in turnos]) == (len(f_c) - 2)
-            prob += lpSum([asig[e][d][t] for d in range(1, num_dias + 1) for t in turnos]) >= 18
+            prob += lpSum([asig[e][d][t] for d in f_c for t in LISTA_TURNOS]) == (len(f_c) - 2)
+            prob += lpSum([asig[e][d][t] for d in range(1, num_dias + 1) for t in LISTA_TURNOS]) >= 18
 
         prob.solve(PULP_CBC_CMD(msg=0))
 
@@ -215,7 +199,7 @@ if df_raw is not None:
             for di in dias_info:
                 for e in df_f['nombre']:
                     t_asig = "---"
-                    for t in turnos:
+                    for t in LISTA_TURNOS:
                         if value(asig[e][di["n"]][t]) == 1: t_asig = t
                     res_list.append({
                         "Dia": di["n"], "Label": di["label"], "Semana": di["semana"], 
@@ -223,17 +207,14 @@ if df_raw is not None:
                         "Contrato": df_f[df_f['nombre']==e]['descripcion'].values[0]
                     })
             
-            # Post-procesamiento de Compensatorios (Semana Siguiente)
             df_res = pd.DataFrame(res_list)
             lista_final = []
             for emp, grupo in df_res.groupby("Empleado"):
                 grupo = grupo.sort_values("Dia").copy()
                 d_c_n = "Sab" if "sabado" in grupo['Contrato'].iloc[0] else "Dom"
-                # Contractuales
                 idx_f = grupo[(grupo['Turno'] == '---') & (grupo['Nom_Dia'] == d_c_n)].head(2).index
                 grupo.loc[idx_f, 'Turno'] = 'DESC. CONTRATO'
-                # Compensatorios L-V vinculados
-                f_trab = grupo[(grupo['Nom_Dia'] == d_c_n) & (grupo['Turno'].isin(turnos))]
+                f_trab = grupo[(grupo['Nom_Dia'] == d_c_n) & (grupo['Turno'].isin(LISTA_TURNOS))]
                 for _, row_f in f_trab.iterrows():
                     idx_comp = grupo[(grupo['Dia'] > row_f['Dia']) & (grupo['Dia'] <= row_f['Dia'] + 7) & 
                                      (grupo['Turno'] == '---') & (~grupo['Nom_Dia'].isin(['Sab', 'Dom']))].index
@@ -244,7 +225,6 @@ if df_raw is not None:
             st.session_state['df_final'] = pd.concat(lista_final).reset_index(drop=True)
             st.success("Cálculo Finalizado")
 
-    # --- VISUALIZACIÓN ---
     if 'df_final' in st.session_state:
         df_v = st.session_state['df_final']
         df_v['ID_Full'] = df_v['Empleado'] + " (" + df_v['Contrato'].str.upper() + ")"
@@ -280,7 +260,8 @@ if df_raw is not None:
             audit = []
             for e, g in df_v.groupby("Empleado"):
                 d_c = "Sab" if "sabado" in g['Contrato'].iloc[0] else "Dom"
-                f_trab = len(g[(g['Nom_Dia'] == d_c) & (g['Turno'].isin(turnos))])
+                # LISTA_TURNOS se usa aquí sin problemas porque es global
+                f_trab = len(g[(g['Nom_Dia'] == d_c) & (g['Turno'].isin(LISTA_TURNOS))])
                 audit.append({
                     "Empleado": e, "Findes Trabajados": f_trab, 
                     "Compensatorios L-V": len(g[g['Turno'] == 'DESC. L-V']), 
