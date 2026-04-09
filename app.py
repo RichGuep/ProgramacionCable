@@ -6,9 +6,9 @@ from datetime import datetime
 import os
 
 # --- 1. CONFIGURACIÓN DE PÁGINA ---
-st.set_page_config(page_title="MovilGo Pro", layout="wide", page_icon="⚡")
+st.set_page_config(page_title="MovilGo Pro - UI Refinada", layout="wide", page_icon="⚡")
 
-# --- 2. ESTILOS PREMIUM (Century Gothic & UI Corporativa) ---
+# --- 2. ESTILOS PREMIUM (Century Gothic, UI Corporativa & Alineación Logos) ---
 st.markdown("""
     <style>
     @import url('https://fonts.cdnfonts.com/css/century-gothic');
@@ -18,100 +18,159 @@ st.markdown("""
         font-family: 'Century Gothic', sans-serif !important;
     }
 
-    /* Fondo App */
-    .stApp { background-color: #f8fafc; }
+    /* Fondo App (Gris muy suave para que resalte el blanco) */
+    .stApp { background-color: #f0f4f8; }
 
-    /* Login UI */
-    .login-box {
+    /* --- ESTILOS ESPECÍFICOS DEL LOGIN --- */
+    h1.movilgo-title-premium {
+        color: #1a365d; /* Blue 900 */
+        font-weight: 800 !important;
+        text-transform: uppercase;
+        letter-spacing: 5px;
+        text-align: center;
+        font-size: 3.2rem !important;
+        margin-bottom: 2px;
+    }
+
+    p.movilgo-sub-premium {
+        text-align: center;
+        color: #64748b; /* Slate 500 */
+        font-size: 1.1rem;
+        margin-top: 0;
+        margin-bottom: 30px;
+        letter-spacing: 1px;
+    }
+
+    .login-premium-box {
         background-color: #ffffff;
-        padding: 40px;
-        border-radius: 15px;
-        box-shadow: 0 10px 25px rgba(0,0,0,0.05);
+        padding: 45px;
+        border-radius: 20px;
+        box-shadow: 0 15px 35px rgba(0,0,0,0.06);
         border: 1px solid #e2e8f0;
     }
     
-    h1.movilgo-title {
-        color: #1e3a8a;
-        font-weight: 800;
-        text-transform: uppercase;
-        letter-spacing: 4px;
-        text-align: center;
-        font-size: 3rem !important;
-    }
-
-    /* Estilo de Tablas */
-    .stDataFrame { border-radius: 10px; }
-
-    /* Botones */
+    /* Botón Premium */
     div.stButton > button {
-        background-color: #2563eb;
+        background-color: #2563eb; /* Blue 600 */
         color: white;
         font-weight: bold;
-        border-radius: 8px;
-        height: 50px;
+        border-radius: 10px;
+        height: 52px;
         transition: 0.3s;
+        border: none;
+        font-size: 1.1rem !important;
     }
     div.stButton > button:hover {
-        background-color: #1e40af;
+        background-color: #1d4ed8; /* Blue 700 */
         transform: translateY(-2px);
+        color: white;
     }
 
-    /* Tabs */
-    .stTabs [data-baseweb="tab"] {
-        font-weight: bold;
-        padding: 10px 20px;
+    /* --- LÓGICA DE ALINEACIÓN DE LOGOS ABAJO --- */
+    .logo-footer-container {
+        display: flex;
+        justify-content: center; /* Centrado horizontal */
+        align-items: center;     /* Centrado vertical entre ellos */
+        gap: 40px;               /* Espacio entre logos */
+        margin-top: 50px;         /* Espacio respecto al login box */
+        flex-wrap: nowrap;        /* Evitar que se rompan en filas */
     }
+
+    .normalized-logo {
+        height: auto;            /* Mantener proporción */
+        max-height: 45px;        /* Altura máxima para uniformidad */
+        width: auto;
+        max-width: 140px;        /* Ancho máximo para evitar logos muy largos */
+        object-fit: contain;     /* Ajustar dentro del espacio sin deformar */
+        filter: grayscale(100%);  /* Efecto monocromático elegante */
+        opacity: 0.6;
+        transition: 0.3s ease-in-out;
+    }
+
+    .normalized-logo:hover {
+        filter: grayscale(0%);
+        opacity: 1;
+        transform: scale(1.05);
+    }
+
+    /* Estilo para los Tabs */
     .stTabs [aria-selected="true"] {
-        background-color: #1e3a8a !important;
+        background-color: #1a365d !important;
         color: white !important;
         border-radius: 5px;
     }
     </style>
     """, unsafe_allow_html=True)
 
-# --- 3. SISTEMA DE LOGIN ---
+# --- 3. SISTEMA DE LOGIN CON UI CORREGIDA ---
 def login_page():
     if 'auth' not in st.session_state:
         st.session_state['auth'] = False
 
     if not st.session_state['auth']:
-        _, col_login, _ = st.columns([1, 1.8, 1])
+        # Centrado de pantalla
+        col1, col_login, col3 = st.columns([1, 1.6, 1])
         with col_login:
-            st.markdown("<br><br>", unsafe_allow_html=True)
+            st.markdown("<br><br><br>", unsafe_allow_html=True)
             
-            # Mostrar Logo Principal
-            if os.path.exists("logo_movilgo.png"):
-                st.image("logo_movilgo.png", use_container_width=True)
-            else:
-                st.markdown("<h1 class='movilgo-title'>MovilGo</h1>", unsafe_allow_html=True)
-            
-            st.markdown("<p style='text-align: center; color: #64748b;'>OPTIMIZACIÓN DE MALLAS Y CUMPLIMIENTO LEGAL</p>", unsafe_allow_html=True)
+            # --- 🚀 MARCA PRINCIPAL (Siempre Century Gothic) ---
+            st.markdown("<h1 class='movilgo-title-premium'>MovilGo</h1>", unsafe_allow_html=True)
+            st.markdown("<p class='movilgo-sub-premium'>OPTIMIZACIÓN DE MALLAS Y CUMPLIMIENTO LEGAL</p>", unsafe_allow_html=True)
 
-            # Muro de Logos de Empresas
-            st.markdown("<div style='display: flex; justify-content: center; gap: 20px; margin-bottom: 20px;'>", unsafe_allow_html=True)
-            for i in range(1, 4):
-                path = f"logo_empresa_{i}.png"
-                if os.path.exists(path):
-                    st.image(path, width=100)
-            st.markdown("</div>", unsafe_allow_html=True)
-
-            # Formulario
+            # --- 🛡️ FORMULARIO DE ACCESO ---
             with st.container():
-                st.markdown("<div class='login-box'>", unsafe_allow_html=True)
-                with st.form("LoginForm"):
-                    user = st.text_input("Correo Corporativo")
-                    pwd = st.text_input("Contraseña", type="password")
+                st.markdown("<div class='login-premium-box'>", unsafe_allow_html=True)
+                st.subheader("🔑 Acceso al Panel de Control")
+                with st.form("LoginFormPremium"):
+                    user = st.text_input("Correo Corporativo", placeholder="ejemplo@greenmovil.com.co")
+                    pwd = st.text_input("Contraseña", type="password", placeholder="••••••••")
+                    st.markdown("<br>", unsafe_allow_html=True)
                     if st.form_submit_button("INGRESAR"):
                         if user == "richard.guevara@greenmovil.com.co" and pwd == "Admin2026":
                             st.session_state['auth'] = True
                             st.session_state['user_name'] = "Richard Guevara"
                             st.rerun()
                         else:
-                            st.error("Credenciales Incorrectas")
+                            st.error("Credenciales Incorrectas o Usuario no autorizado.")
                 st.markdown("</div>", unsafe_allow_html=True)
-        st.stop()
+
+            # --- 🏢 MURO DE LOGOS ABAJO (CORREGIDO Y ALINEADO) ---
+            st.markdown("<div class='logo-footer-container'>", unsafe_allow_html=True)
+            
+            # Orden solicitado: GreenMovil (1), Logo3 (Centro), CableMovil (2)
+            orden_logos = [("logo_empresa_1.png", "GreenMovil"), 
+                           ("logo_empresa_3.png", "Grupo"), # Logo 3 al centro
+                           ("logo_empresa_2.png", "CableMovil")]
+            
+            for path, alt_text in orden_logos:
+                if os.path.exists(path):
+                    # Usamos HTML inyectado para asegurar la clase CSS y normalización total
+                    st.markdown(f"<img src='app/{path}' class='normalized-logo' alt='{alt_text}'>", unsafe_allow_html=True)
+                else:
+                    st.markdown(f"<div style='font-size:0.7rem; color:gray;'>[Falta {alt_text}]</div>", unsafe_allow_html=True)
+            
+            st.markdown("</div>", unsafe_allow_html=True)
+            st.markdown("<br><br>", unsafe_allow_html=True)
+
+        st.stop() # Detener el resto de la app hasta loguearse
 
 login_page()
+
+# =========================================================================
+# --- 🗓️ PANEL DE CONTROL DE MOVILGO (Todo el código operativo) ---
+# =========================================================================
+
+# --- BARRA LATERAL (SIDEBAR) ESTILIZADA ---
+st.sidebar.markdown(f"### 👤 Admin: {st.session_state['user_name']}")
+if st.sidebar.button("Cerrar Sesión"):
+    st.session_state['auth'] = False
+    st.rerun()
+
+st.sidebar.markdown("---")
+st.sidebar.markdown("### ⚙️ Configuración")
+
+# ... (Aquí continúa el resto del código operativo que ya refinamos: 
+# Carga de Excel, Motor Pulp, Estabilidad, Descansos Vincunlados y Auditoría Legal)
 
 # --- 4. PANEL PRINCIPAL ---
 st.sidebar.markdown(f"### 👤 {st.session_state['user_name']}")
