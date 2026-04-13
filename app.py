@@ -6,7 +6,7 @@ from datetime import datetime
 import time
 
 # --- 1. CONFIGURACIÓN ---
-st.set_page_config(page_title="MovilGo Pro - Final", layout="wide", page_icon="📊")
+st.set_page_config(page_title="MovilGo Pro - Lógica Richard Final", layout="wide", page_icon="⚖️")
 
 # --- 2. MOTOR DE CARGA ---
 @st.cache_data
@@ -31,35 +31,49 @@ if df_raw is not None:
     cal = calendar.Calendar(firstweekday=0)
     semanas = [[d for d in sem if d != 0] for sem in cal.monthdayscalendar(2026, mes_num)]
 
-    if st.button("🚀 GENERAR MALLA (LÓGICA RICHARD)"):
+    if st.button("🚀 GENERAR MALLA (LÓGICA COMPENSATORIA)"):
         prog_bar = st.progress(0); status = st.empty()
-        status.text("Calculando malla... (Priorizando descansos)")
+        status.text("Analizando deudas de descanso fin de semana...")
         
         df_f = df_raw[df_raw['cargo'] == cargo_sel].copy()
-        prob = LpProblem("MovilGo_Final_Richard", LpMaximize)
+        prob = LpProblem("MovilGo_Compensatorios", LpMaximize)
         
         asig = LpVariable.dicts("Asig", (df_f['nombre'], range(1, num_dias + 1), ["AM", "PM", "Noche"]), cat='Binary')
         t_sem = LpVariable.dicts("TSem", (df_f['nombre'], range(len(semanas)), ["AM", "PM", "Noche"]), cat='Binary')
         es_descanso = LpVariable.dicts("EsDescanso", (df_f['nombre'], range(1, num_dias + 1)), cat='Binary')
-
-        # OBJETIVO: Maximizar asignaciones para usar a todos los que no descansen
+        
+        # Objetivo: Maximizar trabajo útil
         prob += lpSum([asig[e][d][t] for e in df_f['nombre'] for d in range(1, num_dias + 1) for t in ["AM", "PM", "Noche"]])
 
         for _, row in df_f.iterrows():
             e = row['nombre']
             dia_l_nom = "Sab" if "sab" in str(row['descanso_ley']).lower() else "Dom"
             
-            # --- 4 DESCANSOS EXACTOS ---
-            prob += lpSum([es_descanso[e][d] for d in range(1, num_dias + 1)]) == 4
-            
-            # --- 2 DESCANSOS FDS ---
+            # --- 1. REGLA 2+2 / 3+2 (Descansos de Ley) ---
             dias_fds = [d for d in range(1, num_dias + 1) if ["Lun","Mar","Mie","Jue","Vie","Sab","Dom"][datetime(2026, mes_num, d).weekday()] == dia_l_nom]
-            prob += lpSum([es_descanso[e][d] for d in dias_fds]) == 2
+            min_desc = 3 if len(semanas) >= 5 else 2
+            prob += lpSum([es_descanso[e][d] for d in dias_fds]) == min_desc
 
+            # --- 2. LÓGICA DE COMPENSACIÓN POR INCUMPLIMIENTO ---
+            for s_idx, dias_s in enumerate(semanas):
+                # ¿Qué día es el de su contrato en esta semana?
+                dia_cont_sem = [d for d in dias_s if ["Lun","Mar","Mie","Jue","Vie","Sab","Dom"][datetime(2026, mes_num, d).weekday()] == dia_l_nom]
+                
+                if dia_cont_sem:
+                    d_c = dia_cont_sem[0]
+                    # Si trabaja el día de contrato (asig=1), debe descansar uno de la semana siguiente (es_descanso=1)
+                    if s_idx + 1 < len(semanas):
+                        semana_sig = semanas[s_idx+1]
+                        dias_lv = [d for d in semana_sig if ["Lun","Mar","Mie","Jue","Vie","Sab","Dom"][datetime(2026, mes_num, d).weekday()] not in ["Sab", "Dom"]]
+                        
+                        # Restricción: Si trabajó el FDS de la semana S, en la semana S+1 debe haber al menos un es_descanso en L-V
+                        prob += lpSum([es_descanso[e][d] for d in dias_lv]) >= lpSum([asig[e][d_c][t] for t in ["AM", "PM", "Noche"]])
+
+            # Restricciones generales de seguridad y bloque
             for d in range(1, num_dias + 1):
                 prob += lpSum([asig[e][d][t] for t in ["AM", "PM", "Noche"]]) + es_descanso[e][d] == 1
                 if d < num_dias:
-                    prob += es_descanso[e][d] + es_descanso[e][d+1] <= 1
+                    prob += es_descanso[e][d] + es_descanso[e][d+1] <= 1 # No descansos seguidos para no perder ritmo
                     prob += asig[e][d]["Noche"] + lpSum([asig[e][d+1][t] for t in ["AM", "PM", "Noche"]]) <= 1
                     prob += asig[e][d]["PM"] + asig[e][d+1]["AM"] <= 1
 
@@ -69,13 +83,7 @@ if df_raw is not None:
                     for t in ["AM", "PM", "Noche"]:
                         prob += asig[e][d][t] <= t_sem[e][s_idx][t]
 
-        # RESTRICCIÓN RELAJADA: Intentar cumplir el cupo pero no bloquearse
-        for d in range(1, num_dias + 1):
-            for t in ["AM", "PM", "Noche"]:
-                prob += lpSum([asig[e][d][t] for e in df_f['nombre']]) >= 0 # Solo para estructura
-
-        prog_bar.progress(60)
-        prob.solve(PULP_CBC_CMD(msg=0, timeLimit=30))
+        prob.solve(PULP_CBC_CMD(msg=0, timeLimit=40))
 
         if LpStatus[prob.status] in ['Optimal', 'Not Solved']:
             res_list = []
@@ -101,9 +109,9 @@ if df_raw is not None:
                 df_res.at[idx, 'Final'] = "DESC. LEY" if df_res.at[idx, 'Nom_Dia'] == dia_ley_nom else "DESC. COMP."
             
             st.session_state['df_final'] = df_res
-            prog_bar.progress(100); status.empty(); prog_bar.empty()
+            prog_bar.progress(100); status.empty()
         else:
-            st.error("Error técnico al procesar. Intenta nuevamente.")
+            st.error("No se pudo generar con estas reglas. Revisa el personal.")
 
     if 'df_final' in st.session_state:
         m_f = st.session_state['df_final'].pivot(index='Empleado', columns='Label', values='Final')
@@ -112,10 +120,8 @@ if df_raw is not None:
         def style_v(v):
             if 'TITULAR' in v: return 'background-color: #cce5ff; color: #004085'
             if 'DISPONIBLE' in v: return 'background-color: #d4edda; color: #155724; font-style: italic'
-            if 'DESC' in v: return 'background-color: #ff9900; color: white; font-weight: bold'
+            if 'LEY' in v: return 'background-color: #ff9900; color: white; font-weight: bold'
+            if 'COMP' in v: return 'background-color: #ffd966; color: black; font-weight: bold'
             return ''
 
         st.dataframe(m_f[cols].style.map(style_v), use_container_width=True)
-        st.write("### ⚖️ Auditoría de Descansos (Total 4)")
-        audit = st.session_state['df_final'][st.session_state['df_final']['Final'].str.contains('DESC')].groupby('Empleado').size()
-        st.table(audit)
