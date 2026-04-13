@@ -86,14 +86,16 @@ if df_raw is not None:
             for d in range(1, num_dias + 1):
                 prob += lpSum([asig[e][d][t] for t in LISTA_TURNOS]) <= 1
                 if d < num_dias:
+                    # Regla de Oro: Prohibido turno día tras noche
                     prob += asig[e][d]["Noche"] + lpSum([asig[e][d+1][t] for t in LISTA_TURNOS]) <= 1
                     prob += asig[e][d]["PM"] + asig[e][d+1]["AM"] <= 1
-                    # Lógica de cambio para penalización
+                    # Estabilidad de turno
                     for t in LISTA_TURNOS:
                         prob += asig[e][d][t] - asig[e][d+1][t] <= cambio[e][d+1]
 
             dias_criticos = [di["n"] for di in dias_info if di["nombre"] == dia_l_nom]
-            prob += lpSum([asig[e][d][t] for d in dias_criticos for t in LISTA_TURNOSfeatured]) == (len(dias_criticos) - 2)
+            # Solo 2 días de ley trabajados al mes
+            prob += lpSum([asig[e][d][t] for d in dias_criticos for t in LISTA_TURNOS]) == (len(dias_criticos) - 2)
 
         prob.solve(PULP_CBC_CMD(msg=0))
 
@@ -111,16 +113,16 @@ if df_raw is not None:
             for emp, grupo in df_res.groupby("Empleado"):
                 grupo = grupo.sort_values("Dia").copy()
                 dia_l_nom = "Sab" if "sab" in str(grupo['Ley_Descanso'].iloc[0]).lower() else "Dom"
-                t_base = grupo[grupo['Turno'].isin(LISTA_TURNOS)]['Turno'].mode()[0] if not grupo[grupo['Turno'].isin(LISTA_TURNOS)]['Turno'].mode().empty else "AM"
+                t_mode = grupo[grupo['Turno'].isin(LISTA_TURNOS)]['Turno'].mode()[0] if not grupo[grupo['Turno'].isin(LISTA_TURNOS)]['Turno'].mode().empty else "AM"
 
-                # 1. Marcar los 2 DESC. LEY fijos (Solo donde NO trabajó)
+                # 1. Marcar DESC. LEY (Solo donde NO trabajó)
                 idx_fijos = grupo[(grupo['Turno'] == '---') & (grupo['Nom_Dia'] == dia_l_nom)].head(2).index
                 grupo.loc[idx_fijos, 'Turno'] = 'DESC. LEY'
                 
-                # 2. Compensatorios SÓLO SI TRABAJÓ su día de Ley
+                # 2. Compensatorios SÓLO si trabajó su día de ley
                 findes_trab = grupo[(grupo['Nom_Dia'] == dia_l_nom) & (grupo['Turno'].isin(LISTA_TURNOS))]
                 for _, row_f in findes_trab.iterrows():
-                    # Prioridad: Si salió de noche, usar ese día inmediatamente como compensatorio
+                    # Si salió de noche, intentar que el día siguiente sea su compensatorio
                     check_post_noche = grupo[(grupo['Dia'] == row_f['Dia'] + 1) & (grupo['Turno'] == '---')]
                     if not check_post_noche.empty:
                         grupo.loc[check_post_noche.index, 'Turno'] = 'DESC. COMPENSATORIO'
@@ -129,13 +131,12 @@ if df_raw is not None:
                         if not hueco.empty:
                             grupo.loc[hueco.index, 'Turno'] = 'DESC. COMPENSATORIO'
                 
-                # 3. Post-Noche: Si el día siguiente quedó vacío y no es descanso, se pone disponible
-                # El motor ya garantizó que no trabajará AM/PM/Noche el día siguiente a una Noche real.
+                # 3. Rellenar con DISPONIBILIDAD
                 grupo.loc[grupo['Turno'] == '---', 'Turno'] = f"DISPONIBLE {t_base}"
                 lista_final.append(grupo)
             
             st.session_state['df_final'] = pd.concat(lista_final).reset_index(drop=True)
-            st.success("✅ Malla Generada: Estabilidad de turno y descansos legales garantizados.")
+            st.success("✅ Malla Generada")
 
     if 'df_final' in st.session_state:
         df_v = st.session_state['df_final']
