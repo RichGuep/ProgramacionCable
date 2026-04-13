@@ -4,6 +4,7 @@ from pulp import *
 import calendar
 from datetime import datetime
 import os
+import time
 
 # --- 1. CONFIGURACIÓN ---
 st.set_page_config(page_title="MovilGo Pro", layout="wide", page_icon="⚡")
@@ -37,11 +38,6 @@ def login_page():
                         st.session_state['user_name'] = "Richard Guevara"
                         st.rerun()
                     else: st.error("Credenciales Incorrectas")
-            st.markdown("<div style='display:flex; justify-content:center; gap:40px; margin-top:30px;'>", unsafe_allow_html=True)
-            # Logos alineados con el 3 en el centro
-            for lp in ["logo_empresa_1.png", "logo_empresa_3.png", "logo_empresa_2.png"]:
-                if os.path.exists(lp): st.image(lp, width=120)
-            st.markdown("</div>", unsafe_allow_html=True)
         st.stop()
 
 login_page()
@@ -73,14 +69,22 @@ if df_raw is not None:
     dias_info = [{"n": d, "nombre": ["Lun", "Mar", "Mie", "Jue", "Vie", "Sab", "Dom"][datetime(ano_sel, mes_num, d).weekday()], "label": f"{d} - {['Lun', 'Mar', 'Mie', 'Jue', 'Vie', 'Sab', 'Dom'][datetime(ano_sel, mes_num, d).weekday()]}"} for d in range(1, num_dias + 1)]
 
     if st.button("🚀 GENERAR MALLA ÓPTIMA"):
+        # --- INICIO BARRA DE PROGRESO ---
+        progress_bar = st.progress(0)
+        status_text = st.empty()
+        
+        status_text.text("10% - Cargando base de datos...")
         df_f = df_raw[df_raw['cargo'] == cargo_sel].copy()
+        time.sleep(0.5)
+        
+        status_text.text("30% - Construyendo modelo matemático...")
+        progress_bar.progress(30)
         prob = LpProblem("MovilGo_Final", LpMaximize)
         asig = LpVariable.dicts("Asig", (df_f['nombre'], range(1, num_dias + 1), LISTA_TURNOS), cat='Binary')
         cambio = LpVariable.dicts("Cambio", (df_f['nombre'], range(2, num_dias + 1)), cat='Binary')
         
-        # Objetivo: Maximizar cobertura + Penalizar cambios (Estabilidad de turno/Noche Continua)
         prob += lpSum([asig[e][d][t] for e in df_f['nombre'] for d in range(1, num_dias + 1) for t in LISTA_TURNOS]) - \
-                lpSum([cambio[e][d] * 3 for e in df_f['nombre'] for d in range(2, num_dias + 1)])
+                lpSum([cambio[e][d] * 2 for e in df_f['nombre'] for d in range(2, num_dias + 1)])
 
         for di in dias_info:
             for t in LISTA_TURNOS:
@@ -89,23 +93,26 @@ if df_raw is not None:
         for _, row in df_f.iterrows():
             e = row['nombre']
             dia_l_nom = "Sab" if "sab" in str(row['descanso_ley']).lower() else "Dom"
-            
             for d in range(1, num_dias + 1):
                 prob += lpSum([asig[e][d][t] for t in LISTA_TURNOS]) <= 1
                 if d < num_dias:
-                    # Candado Salud: Prohibido turno día tras noche (Fuerza descanso)
                     prob += asig[e][d]["Noche"] + lpSum([asig[e][d+1][t] for t in LISTA_TURNOS]) <= 1
                     prob += asig[e][d]["PM"] + asig[e][d+1]["AM"] <= 1
                     for t in LISTA_TURNOS:
                         prob += asig[e][d][t] - asig[e][d+1][t] <= cambio[e][d+1]
-
             dias_criticos = [di["n"] for di in dias_info if di["nombre"] == dia_l_nom]
-            # Cumplimiento 2+2: 2 días de ley descansados obligatorios
             prob += lpSum([asig[e][d][t] for d in dias_criticos for t in LISTA_TURNOS]) == (len(dias_criticos) - 2)
 
+        status_text.text("60% - Ejecutando optimizador (Esto puede tardar unos segundos)...")
+        progress_bar.progress(60)
+        
+        # Resolución
         prob.solve(PULP_CBC_CMD(msg=0))
 
         if LpStatus[prob.status] == 'Optimal':
+            status_text.text("85% - Procesando resultados y aplicando descansos...")
+            progress_bar.progress(85)
+            
             res_list = []
             for di in dias_info:
                 for e in df_f['nombre']:
@@ -119,19 +126,14 @@ if df_raw is not None:
             for emp, grupo in df_res.groupby("Empleado"):
                 grupo = grupo.sort_values("Dia").copy()
                 dia_ley_nom = "Sab" if "sab" in str(grupo['Ley_Descanso'].iloc[0]).lower() else "Dom"
-                
-                # Turno base para Disponibilidad (Blindado con AM por defecto)
                 t_mode = grupo[grupo['Turno'].isin(LISTA_TURNOS)]['Turno'].mode()
                 t_base = t_mode[0] if not t_mode.empty else "AM"
 
-                # 1. Marcar los 2 DESC. LEY fijos (Solo donde NO trabajó)
                 idx_fijos = grupo[(grupo['Turno'] == '---') & (grupo['Nom_Dia'] == dia_ley_nom)].head(2).index
                 grupo.loc[idx_fijos, 'Turno'] = 'DESC. LEY'
                 
-                # 2. Compensatorios SÓLO si trabajó su día de ley (Sáb o Dom)
                 findes_trab = grupo[(grupo['Nom_Dia'] == dia_ley_nom) & (grupo['Turno'].isin(LISTA_TURNOS))]
                 for _, row_f in findes_trab.iterrows():
-                    # Si salió de noche, el sistema ya dejó el día vacío. Lo usamos como compensatorio.
                     check_post = grupo[(grupo['Dia'] == row_f['Dia'] + 1) & (grupo['Turno'] == '---')]
                     if not check_post.empty:
                         grupo.loc[check_post.index, 'Turno'] = 'DESC. COMPENSATORIO'
@@ -140,21 +142,20 @@ if df_raw is not None:
                         if not hueco.empty:
                             grupo.loc[hueco.index, 'Turno'] = 'DESC. COMPENSATORIO'
                 
-                # 3. Rellenar Disponibilidad con el turno base (Solo si no es descanso y no viene de noche)
-                for i in range(len(grupo)):
-                    if grupo.iloc[i]['Turno'] == '---':
-                        if i > 0 and grupo.iloc[i-1]['Turno'] == "Noche":
-                            # Si no se asignó como compensatorio arriba, forzamos que no sea AM/PM/Noche
-                            grupo.iloc[i, grupo.columns.get_loc('Turno')] = 'DESC. COMPENSATORIO'
-                        else:
-                            grupo.iloc[i, grupo.columns.get_loc('Turno')] = f"DISPONIBLE {t_base}"
-                
+                grupo.loc[grupo['Turno'] == '---', 'Turno'] = f"DISPONIBLE {t_base}"
                 lista_final.append(grupo)
             
             st.session_state['df_final'] = pd.concat(lista_final).reset_index(drop=True)
-            st.success("✅ Malla Generada")
+            
+            status_text.text("100% - ¡Malla generada con éxito!")
+            progress_bar.progress(100)
+            time.sleep(1)
+            progress_bar.empty()
+            status_text.empty()
         else:
-            st.error("❌ Conflicto de reglas. Intenta bajar el cupo operativo.")
+            progress_bar.empty()
+            status_text.empty()
+            st.error("❌ Conflicto de reglas. Intenta bajar el cupo.")
 
     # --- 5. RENDERIZADO ---
     if 'df_final' in st.session_state:
