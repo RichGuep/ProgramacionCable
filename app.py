@@ -64,15 +64,13 @@ if df_raw is not None:
     num_dias = calendar.monthrange(ano_sel, mes_num)[1]
     dias_info = [{"n": d, "nombre": ["Lun", "Mar", "Mie", "Jue", "Vie", "Sab", "Dom"][datetime(ano_sel, mes_num, d).weekday()], "label": f"{d} - {['Lun', 'Mar', 'Mie', 'Jue', 'Vie', 'Sab', 'Dom'][datetime(ano_sel, mes_num, d).weekday()]}"} for d in range(1, num_dias + 1)]
 
-    if st.button("🚀 GENERAR MALLA PRIORIZANDO COBERTURA"):
-        progress_bar = st.progress(0); status_text = st.empty()
-        
+    if st.button("🚀 GENERAR MALLA ÓPTIMA"):
         df_f = df_raw[df_raw['cargo'] == cargo_sel].copy()
-        prob = LpProblem("MovilGo_Cobertura_Total", LpMaximize)
+        prob = LpProblem("MovilGo_Final", LpMaximize)
         asig = LpVariable.dicts("Asig", (df_f['nombre'], range(1, num_dias + 1), LISTA_TURNOS), cat='Binary')
         hueco = LpVariable.dicts("Hueco", (range(1, num_dias + 1), LISTA_TURNOS), lowBound=0, cat='Integer')
 
-        # OBJETIVO: Cobertura total (hueco penalizado con 10,000 puntos)
+        # Prioridad: Cobertura total (penalización alta por huecos)
         prob += lpSum([asig[e][d][t] for e in df_f['nombre'] for d in range(1, num_dias + 1) for t in LISTA_TURNOS]) - \
                 lpSum([hueco[d][t] * 10000 for d in range(1, num_dias + 1) for t in LISTA_TURNOS])
 
@@ -92,9 +90,7 @@ if df_raw is not None:
             dias_criticos = [di["n"] for di in dias_info if di["nombre"] == dia_l_nom]
             prob += lpSum([asig[e][d][t] for d in dias_criticos for t in LISTA_TURNOS]) == (len(dias_criticos) - 2)
 
-        status_text.text("Calculando cobertura óptima...")
-        progress_bar.progress(50)
-        prob.solve(PULP_CBC_CMD(msg=0, timeLimit=25))
+        prob.solve(PULP_CBC_CMD(msg=0, timeLimit=20))
 
         if LpStatus[prob.status] in ['Optimal', 'Not Solved']:
             res_list = []
@@ -112,30 +108,45 @@ if df_raw is not None:
                 t_mode = grupo[grupo['Turno'].isin(LISTA_TURNOS)]['Turno'].mode()
                 t_base = t_mode[0] if not t_mode.empty else "AM"
                 
-                # --- SOLUCIÓN AL KEYERROR: Usar rango de posiciones reales ---
+                # --- LÓGICA DE ASIGNACIÓN POST-PROCESO ---
+                # Identificamos qué fines de semana TRABAJÓ para saber si compensar
+                dia_ley_nombre = "Sab" if "sab" in str(grupo.loc[0, 'Ley_Descanso']).lower() else "Dom"
+                findes_trabajados = grupo[(grupo['Nom_Dia'] == dia_ley_nombre) & (grupo['Turno'].isin(LISTA_TURNOS))]['Dia'].tolist()
+
                 for i in range(len(grupo)):
                     if grupo.loc[i, 'Turno'] == '---':
                         dia_act = grupo.loc[i, 'Nom_Dia']
-                        dia_ley = "Sab" if "sab" in str(grupo.loc[i, 'Ley_Descanso']).lower() else "Dom"
+                        num_dia = grupo.loc[i, 'Dia']
                         
-                        # Si es día de contrato y está vacío, es descanso de ley
-                        if dia_act == dia_ley:
+                        # 1. ¿Es su día de descanso legal?
+                        if dia_act == dia_ley_nombre:
                             if len(grupo[grupo['Turno'] == 'DESC. LEY']) < 2:
                                 grupo.loc[i, 'Turno'] = 'DESC. LEY'
                             else:
                                 grupo.loc[i, 'Turno'] = f"DISPONIBLE {t_base}"
-                        # Si el día anterior fue noche (usando posición i-1 segura)
+                        
+                        # 2. ¿Salió de noche el día anterior? 
+                        # SÓLO compensamos si el finde anterior TRABAJÓ su día de ley
                         elif i > 0 and grupo.loc[i-1, 'Turno'] == 'Noche':
-                            grupo.loc[i, 'Turno'] = 'DESC. COMPENSATORIO'
+                            # Verificamos si tiene un compensatorio pendiente de un finde trabajado
+                            if any(num_dia > f and num_dia <= f + 7 for f in findes_trabajados):
+                                grupo.loc[i, 'Turno'] = 'DESC. COMPENSATORIO'
+                            else:
+                                # Si no debe compensatorio, el motor ya prohibió AM/PM, pero queda como disponible
+                                grupo.loc[i, 'Turno'] = f"DISPONIBLE {t_base}"
+                        
+                        # 3. Resto de días libres
                         else:
                             grupo.loc[i, 'Turno'] = f"DISPONIBLE {t_base}"
+                
                 lista_final.append(grupo)
             
             st.session_state['df_final'] = pd.concat(lista_final).reset_index(drop=True)
-            status_text.empty(); progress_bar.empty()
+            st.success("✅ Malla Generada: Sin compensatorios innecesarios.")
         else:
-            st.error("No se pudo generar la malla. Revisa los cupos.")
+            st.error("No se encontró solución viable.")
 
     if 'df_final' in st.session_state:
-        m_f = st.session_state['df_final'].pivot(index='Empleado', columns='Label', values='Turno')
+        df_v = st.session_state['df_final']
+        m_f = df_v.pivot(index='Empleado', columns='Label', values='Turno')
         st.dataframe(m_f[sorted(m_f.columns, key=lambda x: int(x.split(' - ')[0]))], use_container_width=True)
