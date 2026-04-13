@@ -66,20 +66,16 @@ if df_raw is not None:
 
     if st.button("🚀 GENERAR MALLA PRIORIZANDO COBERTURA"):
         progress_bar = st.progress(0); status_text = st.empty()
-        status_text.text("Preparando motor...")
         
         df_f = df_raw[df_raw['cargo'] == cargo_sel].copy()
         prob = LpProblem("MovilGo_Cobertura_Total", LpMaximize)
-        
         asig = LpVariable.dicts("Asig", (df_f['nombre'], range(1, num_dias + 1), LISTA_TURNOS), cat='Binary')
-        # Variable para detectar huecos (penalización)
         hueco = LpVariable.dicts("Hueco", (range(1, num_dias + 1), LISTA_TURNOS), lowBound=0, cat='Integer')
 
-        # OBJETIVO: Maximizar asignaciones y MINIMIZAR huecos (peso 1000)
+        # OBJETIVO: Cobertura total (hueco penalizado con 10,000 puntos)
         prob += lpSum([asig[e][d][t] for e in df_f['nombre'] for d in range(1, num_dias + 1) for t in LISTA_TURNOS]) - \
-                lpSum([hueco[d][t] * 1000 for d in range(1, num_dias + 1) for t in LISTA_TURNOS])
+                lpSum([hueco[d][t] * 10000 for d in range(1, num_dias + 1) for t in LISTA_TURNOS])
 
-        # Restricción de Cupo con variable de holgura (hueco)
         for di in dias_info:
             for t in LISTA_TURNOS:
                 prob += lpSum([asig[e][di["n"]][t] for e in df_f['nombre']]) + hueco[di["n"]][t] >= cupo_manual
@@ -90,20 +86,17 @@ if df_raw is not None:
             for d in range(1, num_dias + 1):
                 prob += lpSum([asig[e][d][t] for t in LISTA_TURNOS]) <= 1
                 if d < num_dias:
-                    # Regla irrenunciable: Descanso post-noche
                     prob += asig[e][d]["Noche"] + lpSum([asig[e][d+1][t] for t in LISTA_TURNOS]) <= 1
                     prob += asig[e][d]["PM"] + asig[e][d+1]["AM"] <= 1
             
             dias_criticos = [di["n"] for di in dias_info if di["nombre"] == dia_l_nom]
             prob += lpSum([asig[e][d][t] for d in dias_criticos for t in LISTA_TURNOS]) == (len(dias_criticos) - 2)
 
-        status_text.text("Resolviendo cobertura óptima...")
+        status_text.text("Calculando cobertura óptima...")
         progress_bar.progress(50)
-        prob.solve(PULP_CBC_CMD(msg=0, timeLimit=20))
+        prob.solve(PULP_CBC_CMD(msg=0, timeLimit=25))
 
         if LpStatus[prob.status] in ['Optimal', 'Not Solved']:
-            status_text.text("Procesando resultados...")
-            progress_bar.progress(80)
             res_list = []
             for di in dias_info:
                 for e in df_f['nombre']:
@@ -115,28 +108,33 @@ if df_raw is not None:
             df_res = pd.DataFrame(res_list)
             lista_final = []
             for emp, grupo in df_res.groupby("Empleado"):
-                grupo = grupo.sort_values("Dia").copy()
+                grupo = grupo.sort_values("Dia").reset_index(drop=True)
                 t_mode = grupo[grupo['Turno'].isin(LISTA_TURNOS)]['Turno'].mode()
                 t_base = t_mode[0] if not t_mode.empty else "AM"
                 
-                # Marcar descansos y rellenar disponibilidades
-                idx_venc = grupo[grupo['Turno'] == '---'].index
-                for idx in idx_venc:
-                    dia_act = grupo.loc[idx, 'Nom_Dia']
-                    dia_ley = "Sab" if "sab" in str(grupo.loc[idx, 'Ley_Descanso']).lower() else "Dom"
-                    
-                    if dia_act == dia_ley:
-                        grupo.loc[idx, 'Turno'] = 'DESC. LEY'
-                    elif idx > 0 and grupo.loc[idx-1, 'Turno'] == 'Noche':
-                        grupo.loc[idx, 'Turno'] = 'DESC. COMPENSATORIO'
-                    else:
-                        grupo.loc[idx, 'Turno'] = f"DISPONIBLE {t_base}"
+                # --- SOLUCIÓN AL KEYERROR: Usar rango de posiciones reales ---
+                for i in range(len(grupo)):
+                    if grupo.loc[i, 'Turno'] == '---':
+                        dia_act = grupo.loc[i, 'Nom_Dia']
+                        dia_ley = "Sab" if "sab" in str(grupo.loc[i, 'Ley_Descanso']).lower() else "Dom"
+                        
+                        # Si es día de contrato y está vacío, es descanso de ley
+                        if dia_act == dia_ley:
+                            if len(grupo[grupo['Turno'] == 'DESC. LEY']) < 2:
+                                grupo.loc[i, 'Turno'] = 'DESC. LEY'
+                            else:
+                                grupo.loc[i, 'Turno'] = f"DISPONIBLE {t_base}"
+                        # Si el día anterior fue noche (usando posición i-1 segura)
+                        elif i > 0 and grupo.loc[i-1, 'Turno'] == 'Noche':
+                            grupo.loc[i, 'Turno'] = 'DESC. COMPENSATORIO'
+                        else:
+                            grupo.loc[i, 'Turno'] = f"DISPONIBLE {t_base}"
                 lista_final.append(grupo)
             
             st.session_state['df_final'] = pd.concat(lista_final).reset_index(drop=True)
-            progress_bar.progress(100); time.sleep(1); progress_bar.empty(); status_text.empty()
+            status_text.empty(); progress_bar.empty()
         else:
-            st.error("No se encontró solución viable con el personal actual.")
+            st.error("No se pudo generar la malla. Revisa los cupos.")
 
     if 'df_final' in st.session_state:
         m_f = st.session_state['df_final'].pivot(index='Empleado', columns='Label', values='Turno')
