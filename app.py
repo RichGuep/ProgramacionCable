@@ -17,6 +17,7 @@ st.markdown("""
     html, body, [class*="st-"], div, span, p, text { font-family: 'Century Gothic', sans-serif !important; }
     .stApp { background-color: #f8fafc; }
     div.stButton > button { background-color: #2563eb; color: white; font-weight: bold; border-radius: 10px; height: 52px; border: none; }
+    .stTabs [aria-selected="true"] { background-color: #1a365d !important; color: white !important; border-radius: 5px; }
     </style>
     """, unsafe_allow_html=True)
 
@@ -33,7 +34,7 @@ def login_page():
                 pwd = st.text_input("Contraseña", type="password")
                 if st.form_submit_button("INGRESAR"):
                     if user == "richard.guevara@greenmovil.com.co" and pwd == "Admin2026":
-                        st.session_state['auth'] = True; st.session_state['user_name'] = "Richard Guevara"; st.rerun()
+                        st.session_state['auth'] = True; st.rerun()
         st.stop()
 
 login_page()
@@ -64,13 +65,12 @@ if df_raw is not None:
     num_dias = calendar.monthrange(ano_sel, mes_num)[1]
     dias_info = [{"n": d, "nombre": ["Lun", "Mar", "Mie", "Jue", "Vie", "Sab", "Dom"][datetime(ano_sel, mes_num, d).weekday()], "label": f"{d} - {['Lun', 'Mar', 'Mie', 'Jue', 'Vie', 'Sab', 'Dom'][datetime(ano_sel, mes_num, d).weekday()]}"} for d in range(1, num_dias + 1)]
 
-    if st.button("🚀 GENERAR MALLA ÓPTIMA"):
+    if st.button("🚀 GENERAR MALLA COMPLETA"):
         df_f = df_raw[df_raw['cargo'] == cargo_sel].copy()
         prob = LpProblem("MovilGo_Final", LpMaximize)
         asig = LpVariable.dicts("Asig", (df_f['nombre'], range(1, num_dias + 1), LISTA_TURNOS), cat='Binary')
         hueco = LpVariable.dicts("Hueco", (range(1, num_dias + 1), LISTA_TURNOS), lowBound=0, cat='Integer')
 
-        # Prioridad: Cobertura total (penalización alta por huecos)
         prob += lpSum([asig[e][d][t] for e in df_f['nombre'] for d in range(1, num_dias + 1) for t in LISTA_TURNOS]) - \
                 lpSum([hueco[d][t] * 10000 for d in range(1, num_dias + 1) for t in LISTA_TURNOS])
 
@@ -86,7 +86,6 @@ if df_raw is not None:
                 if d < num_dias:
                     prob += asig[e][d]["Noche"] + lpSum([asig[e][d+1][t] for t in LISTA_TURNOS]) <= 1
                     prob += asig[e][d]["PM"] + asig[e][d+1]["AM"] <= 1
-            
             dias_criticos = [di["n"] for di in dias_info if di["nombre"] == dia_l_nom]
             prob += lpSum([asig[e][d][t] for d in dias_criticos for t in LISTA_TURNOS]) == (len(dias_criticos) - 2)
 
@@ -105,48 +104,56 @@ if df_raw is not None:
             lista_final = []
             for emp, grupo in df_res.groupby("Empleado"):
                 grupo = grupo.sort_values("Dia").reset_index(drop=True)
-                t_mode = grupo[grupo['Turno'].isin(LISTA_TURNOS)]['Turno'].mode()
-                t_base = t_mode[0] if not t_mode.empty else "AM"
-                
-                # --- LÓGICA DE ASIGNACIÓN POST-PROCESO ---
-                # Identificamos qué fines de semana TRABAJÓ para saber si compensar
                 dia_ley_nombre = "Sab" if "sab" in str(grupo.loc[0, 'Ley_Descanso']).lower() else "Dom"
                 findes_trabajados = grupo[(grupo['Nom_Dia'] == dia_ley_nombre) & (grupo['Turno'].isin(LISTA_TURNOS))]['Dia'].tolist()
+                t_mode = grupo[grupo['Turno'].isin(LISTA_TURNOS)]['Turno'].mode()
+                t_base = t_mode[0] if not t_mode.empty else "AM"
 
                 for i in range(len(grupo)):
                     if grupo.loc[i, 'Turno'] == '---':
-                        dia_act = grupo.loc[i, 'Nom_Dia']
-                        num_dia = grupo.loc[i, 'Dia']
-                        
-                        # 1. ¿Es su día de descanso legal?
-                        if dia_act == dia_ley_nombre:
-                            if len(grupo[grupo['Turno'] == 'DESC. LEY']) < 2:
-                                grupo.loc[i, 'Turno'] = 'DESC. LEY'
-                            else:
-                                grupo.loc[i, 'Turno'] = f"DISPONIBLE {t_base}"
-                        
-                        # 2. ¿Salió de noche el día anterior? 
-                        # SÓLO compensamos si el finde anterior TRABAJÓ su día de ley
+                        if grupo.loc[i, 'Nom_Dia'] == dia_ley_nombre:
+                            if len(grupo[grupo['Turno'] == 'DESC. LEY']) < 2: grupo.loc[i, 'Turno'] = 'DESC. LEY'
+                            else: grupo.loc[i, 'Turno'] = f"DISPONIBLE {t_base}"
                         elif i > 0 and grupo.loc[i-1, 'Turno'] == 'Noche':
-                            # Verificamos si tiene un compensatorio pendiente de un finde trabajado
-                            if any(num_dia > f and num_dia <= f + 7 for f in findes_trabajados):
+                            if any(grupo.loc[i, 'Dia'] > f and grupo.loc[i, 'Dia'] <= f + 7 for f in findes_trabajados):
                                 grupo.loc[i, 'Turno'] = 'DESC. COMPENSATORIO'
-                            else:
-                                # Si no debe compensatorio, el motor ya prohibió AM/PM, pero queda como disponible
-                                grupo.loc[i, 'Turno'] = f"DISPONIBLE {t_base}"
-                        
-                        # 3. Resto de días libres
-                        else:
-                            grupo.loc[i, 'Turno'] = f"DISPONIBLE {t_base}"
-                
+                            else: grupo.loc[i, 'Turno'] = f"DISPONIBLE {t_base}"
+                        else: grupo.loc[i, 'Turno'] = f"DISPONIBLE {t_base}"
                 lista_final.append(grupo)
             
             st.session_state['df_final'] = pd.concat(lista_final).reset_index(drop=True)
-            st.success("✅ Malla Generada: Sin compensatorios innecesarios.")
-        else:
-            st.error("No se encontró solución viable.")
+            st.success("✅ Malla Generada")
 
+    # --- 5. VISUALIZACIÓN Y REPORTES ---
     if 'df_final' in st.session_state:
         df_v = st.session_state['df_final']
-        m_f = df_v.pivot(index='Empleado', columns='Label', values='Turno')
-        st.dataframe(m_f[sorted(m_f.columns, key=lambda x: int(x.split(' - ')[0]))], use_container_width=True)
+        
+        def style_map(v):
+            if 'LEY' in v: return 'background-color: #ffb3b3; color: #b30000; font-weight: bold'
+            if 'COMPENSATORIO' in v: return 'background-color: #ffd9b3; color: #804000; font-weight: bold'
+            if 'DISPONIBLE' in v: return 'background-color: #e6f3ff; color: #004080'
+            return 'background-color: #ccf5ff; color: #005580;'
+
+        tab1, tab2, tab3 = st.tabs(["📅 Malla Principal", "⚖️ Auditoría Reforma 2+2", "📊 Cobertura por Turno"])
+
+        with tab1:
+            m_f = df_v.pivot(index='Empleado', columns='Label', values='Turno')
+            st.dataframe(m_f[sorted(m_f.columns, key=lambda x: int(x.split(' - ')[0]))].style.map(style_map), use_container_width=True)
+
+        with tab2:
+            st.subheader("Resumen de Cumplimiento Laboral")
+            audit = []
+            for e, g in df_v.groupby("Empleado"):
+                dia_l = "Sab" if "sab" in str(g['Ley_Descanso'].iloc[0]).lower() else "Dom"
+                trab = len(g[(g['Nom_Dia'] == dia_l) & (g['Turno'].isin(LISTA_TURNOS))])
+                desc = len(g[g['Turno'] == 'DESC. LEY'])
+                comp = len(g[g['Turno'] == 'DESC. COMPENSATORIO'])
+                audit.append({"Empleado": e, "Contrato Ley": dia_l, "Fines Trabajados": trab, "Descansos Ley (Fines)": desc, "Compensatorios (Semana)": comp, "Estado": "✅ Cumple" if desc >= 2 else "⚠️ Revisar"})
+            st.table(pd.DataFrame(audit))
+
+        with tab3:
+            st.subheader("Personal Cubierto por Día")
+            cob = df_v[df_v['Turno'].isin(LISTA_TURNOS)].groupby(['Label', 'Turno']).size().unstack(fill_value=0)
+            cob['Total Día'] = cob.sum(axis=1)
+            st.dataframe(cob.style.highlight_between(left=0, right=cupo_manual-1, color='#ffcccc'), use_container_width=True)
+            st.info(f"💡 Las celdas en rojo indican que el turno está por debajo del cupo mínimo de {cupo_manual} personas.")
