@@ -87,17 +87,14 @@ if df_raw is not None:
             
             for d in range(1, num_dias + 1):
                 prob += lpSum([asig[e][d][t] for t in LISTA_TURNOS]) <= 1
-                
-                # REGLA DE ORO CORREGIDA: Después de noche NO PUEDE haber nada al día siguiente
                 if d < num_dias:
-                    # Si d es Noche, d+1 NO puede ser AM ni PM ni Noche (debe ser día de descanso)
+                    # Regla técnica: Prohibido trabajar tras noche, el motor debe dejar el hueco
                     prob += asig[e][d]["Noche"] + lpSum([asig[e][d+1][t] for t in LISTA_TURNOS]) <= 1
-                    # También protegemos el cambio de PM a AM
                     prob += asig[e][d]["PM"] + asig[e][d+1]["AM"] <= 1
             
             dias_criticos = [di["n"] for di in dias_info if di["nombre"] == dia_ley]
             prob += lpSum([asig[e][d][t] for d in dias_criticos for t in LISTA_TURNOS]) <= (len(dias_criticos) - 2)
-            prob += lpSum([asig[e][d][t] for d in range(1, num_dias + 1) for t in LISTA_TURNOS]) >= 16
+            prob += lpSum([asig[e][d][t] for d in range(1, num_dias + 1) for t in LISTA_TURNOS]) >= 17
 
         prob.solve(PULP_CBC_CMD(msg=0))
 
@@ -115,41 +112,41 @@ if df_raw is not None:
             for emp, grupo in df_res.groupby("Empleado"):
                 grupo = grupo.sort_values("Dia").copy()
                 dia_ley_nom = "Sab" if "sab" in str(grupo['Ley_Descanso'].iloc[0]).lower() else "Dom"
-                
-                # Turno base del empleado para su disponibilidad
                 turnos_mode = grupo[grupo['Turno'].isin(LISTA_TURNOS)]['Turno'].mode()
                 t_base = turnos_mode[0] if not turnos_mode.empty else "AM"
 
-                # 1. Marcar descansos fijos de Ley
-                idx_fijos = grupo[(grupo['Turno'] == '---') & (grupo['Nom_Dia'] == dia_ley_nom)].head(2).index
-                grupo.loc[idx_fijos, 'Turno'] = 'DESC. LEY'
-                
-                # 2. Compensatorios L-V
+                # LÓGICA DE ASIGNACIÓN INTELIGENTE DE DESCANSOS
+                # 1. Identificar si hay salida de Noche y asignar descanso ahí si es posible
+                for i in range(len(grupo)-1):
+                    if grupo.iloc[i]['Turno'] == "Noche":
+                        # El día i+1 DEBE ser descanso. Priorizamos que sea el de Ley o Compensatorio
+                        if grupo.iloc[i+1]['Nom_Dia'] == dia_ley_nom:
+                            grupo.iloc[i+1, grupo.columns.get_loc('Turno')] = 'DESC. LEY'
+                        else:
+                            grupo.iloc[i+1, grupo.columns.get_loc('Turno')] = 'DESC. COMPENSATORIO'
+
+                # 2. Asegurar que tenga sus 2 Descansos de Ley (si no se asignaron en el paso 1)
+                descansos_ley_dados = len(grupo[grupo['Turno'] == 'DESC. LEY'])
+                if descansos_ley_dados < 2:
+                    vacios_ley = grupo[(grupo['Turno'] == '---') & (grupo['Nom_Dia'] == dia_ley_nom)].head(2 - descansos_ley_dados).index
+                    grupo.loc[vacios_ley, 'Turno'] = 'DESC. LEY'
+
+                # 3. Compensatorios restantes (si trabajó findes de descanso)
                 findes_trab = grupo[(grupo['Nom_Dia'] == dia_ley_nom) & (grupo['Turno'].isin(LISTA_TURNOS))]
                 for _, row_f in findes_trab.iterrows():
-                    hueco = grupo[(grupo['Dia'] > row_f['Dia']) & (grupo['Dia'] <= row_f['Dia'] + 7) & (grupo['Turno'] == '---') & (~grupo['Nom_Dia'].isin(['Sab', 'Dom']))].head(1)
-                    if not hueco.empty:
-                        grupo.loc[hueco.index, 'Turno'] = 'DESC. COMPENSATORIO'
+                    # Si ya no se asignó compensatorio tras la noche de ese finde, buscar hueco L-V
+                    ya_tiene_comp = len(grupo[(grupo['Dia'] > row_f['Dia']) & (grupo['Dia'] <= row_f['Dia'] + 7) & (grupo['Turno'] == 'DESC. COMPENSATORIO')])
+                    if ya_tiene_comp == 0:
+                        hueco = grupo[(grupo['Dia'] > row_f['Dia']) & (grupo['Dia'] <= row_f['Dia'] + 7) & (grupo['Turno'] == '---') & (~grupo['Nom_Dia'].isin(['Sab', 'Dom']))].head(1)
+                        if not hueco.empty:
+                            grupo.loc[hueco.index, 'Turno'] = 'DESC. COMPENSATORIO'
                 
-                # 3. DISPONIBILIDAD (Solo donde el día NO es descanso legal)
-                # OJO: Si el día anterior fue NOCHE, este día DEBE ser LIBRE (no disponibilidad)
-                for i in range(1, len(grupo)):
-                    idx_actual = grupo.index[i]
-                    idx_prev = grupo.index[i-1]
-                    if grupo.loc[idx_actual, 'Turno'] == '---':
-                        if grupo.loc[idx_prev, 'Turno'] in ["Noche", "DISPONIBLE Noche"]:
-                            grupo.loc[idx_actual, 'Turno'] = 'LIBRE (POST-NOCHE)'
-                        else:
-                            grupo.loc[idx_actual, 'Turno'] = f"DISPONIBLE {t_base}"
-                
-                # Caso especial día 1 si estaba en blanco
-                if grupo.iloc[0]['Turno'] == '---':
-                    grupo.iloc[0, grupo.columns.get_loc('Turno')] = f"DISPONIBLE {t_base}"
-
+                # 4. Rellenar lo que sobra con DISPONIBILIDAD
+                grupo.loc[grupo['Turno'] == '---', 'Turno'] = f"DISPONIBLE {t_base}"
                 lista_final.append(grupo)
             
             st.session_state['df_final'] = pd.concat(lista_final).reset_index(drop=True)
-            st.success("✅ Malla Generada: Respetando descanso post-noche.")
+            st.success("✅ Malla Optimizada: Descansos asignados tras turnos de noche.")
 
     if 'df_final' in st.session_state:
         df_v = st.session_state['df_final']
@@ -157,7 +154,6 @@ if df_raw is not None:
             if 'LEY' in v: return 'background-color: #ffb3b3; color: #b30000; font-weight: bold'
             if 'COMPENSATORIO' in v: return 'background-color: #ffd9b3; color: #804000; font-weight: bold'
             if 'DISPONIBLE' in v: return 'background-color: #e6f3ff; color: #004080'
-            if 'POST-NOCHE' in v: return 'background-color: #d1d5db; color: #374151; font-style: italic'
             return ''
 
         t1, t2, t3 = st.tabs(["📅 Malla Operativa", "🔍 Filtro Empleado", "⚖️ Auditoría Legal"])
