@@ -67,10 +67,9 @@ if df_raw is not None:
 
     if st.button("🚀 GENERAR MALLA"):
         df_f = df_raw[df_raw['cargo'] == cargo_sel].copy()
-        prob = LpProblem("MovilGo_Balanced", LpMaximize)
+        prob = LpProblem("MovilGo_Final", LpMaximize)
         asig = LpVariable.dicts("Asig", (df_f['nombre'], range(1, num_dias + 1), LISTA_TURNOS), cat='Binary')
         
-        # Prioridad: Cobertura
         prob += lpSum([asig[e][d][t] for e in df_f['nombre'] for d in range(1, num_dias + 1) for t in LISTA_TURNOS])
 
         for di in dias_info:
@@ -84,11 +83,10 @@ if df_raw is not None:
             for d in range(1, num_dias + 1):
                 prob += lpSum([asig[e][d][t] for t in LISTA_TURNOS]) <= 1
                 if d < num_dias:
-                    # Motor prohíbe trabajo AM/PM después de noche
+                    # BLOQUEO MATEMÁTICO: No se puede trabajar nada tras un turno Noche
                     prob += asig[e][d]["Noche"] + lpSum([asig[e][d+1][t] for t in LISTA_TURNOS]) <= 1
                     prob += asig[e][d]["PM"] + asig[e][d+1]["AM"] <= 1
 
-            # Regla 2+2 Matemática: Solo 2 fines de semana de descanso real
             dias_criticos = [di["n"] for di in dias_info if di["nombre"] == dia_l_nom]
             prob += lpSum([asig[e][d][t] for d in dias_criticos for t in LISTA_TURNOS]) == (len(dias_criticos) - 2)
 
@@ -114,26 +112,40 @@ if df_raw is not None:
                 idx_fijos = grupo[(grupo['Turno'] == '---') & (grupo['Nom_Dia'] == dia_l_nom)].head(2).index
                 grupo.loc[idx_fijos, 'Turno'] = 'DESC. LEY'
                 
-                # 2. Compensatorios ÚNICAMENTE si trabajó su día de Ley
+                # 2. Compensatorios SÓLO SI TRABAJÓ su día de Ley
                 findes_trab = grupo[(grupo['Nom_Dia'] == dia_l_nom) & (grupo['Turno'].isin(LISTA_TURNOS))]
                 for _, row_f in findes_trab.iterrows():
-                    # Buscamos compensarlo en la semana siguiente L-V
-                    hueco = grupo[(grupo['Dia'] > row_f['Dia']) & (grupo['Dia'] <= row_f['Dia'] + 7) & (grupo['Turno'] == '---') & (~grupo['Nom_Dia'].isin(['Sab', 'Dom']))].head(1)
-                    if not hueco.empty:
-                        grupo.loc[hueco.index, 'Turno'] = 'DESC. COMPENSATORIO'
+                    # Prioridad: Si salió de noche, usar ese día como el compensatorio
+                    check_post_noche = grupo[(grupo['Dia'] == row_f['Dia'] + 1) & (grupo['Turno'] == '---')]
+                    if not check_post_noche.empty:
+                        grupo.loc[check_post_noche.index, 'Turno'] = 'DESC. COMPENSATORIO'
+                    else:
+                        hueco = grupo[(grupo['Dia'] > row_f['Dia']) & (grupo['Dia'] <= row_f['Dia'] + 7) & (grupo['Turno'] == '---') & (~grupo['Nom_Dia'].isin(['Sab', 'Dom']))].head(1)
+                        if not hueco.empty:
+                            grupo.loc[hueco.index, 'Turno'] = 'DESC. COMPENSATORIO'
                 
-                # 3. Rellenar con DISPONIBILIDAD (No damos descansos extras si no es por Ley o Compensación)
+                # 3. CANDADO DE SEGURIDAD POST-NOCHE (Incluso para Disponibilidad)
+                # Recorremos el grupo para asegurar que tras Noche NO haya Disponible AM/PM
+                for i in range(1, len(grupo)):
+                    idx_actual = grupo.index[i]
+                    idx_prev = grupo.index[i-1]
+                    if (grupo.loc[idx_prev, 'Turno'] == "Noche") and (grupo.loc[idx_actual, 'Turno'] == '---'):
+                        # Si no es un descanso ya asignado, forzamos un descanso para que no caiga Disponible AM
+                        grupo.loc[idx_actual, 'Turno'] = 'DESC. RECUPERACION'
+
+                # 4. Rellenar lo restante con DISPONIBILIDAD
                 grupo.loc[grupo['Turno'] == '---', 'Turno'] = f"DISPONIBLE {t_base}"
                 lista_final.append(grupo)
             
             st.session_state['df_final'] = pd.concat(lista_final).reset_index(drop=True)
-            st.success("✅ Malla Equilibrada: Descansos otorgados solo por Ley o Trabajo en Finde.")
+            st.success("✅ Malla Generada: Bloqueo estricto de turnos AM/PM después de jornada nocturna.")
 
     if 'df_final' in st.session_state:
         df_v = st.session_state['df_final']
         def style_map(v):
             if 'LEY' in v: return 'background-color: #ffb3b3; color: #b30000; font-weight: bold'
             if 'COMPENSATORIO' in v: return 'background-color: #ffd9b3; color: #804000; font-weight: bold'
+            if 'RECUPERACION' in v: return 'background-color: #d1d5db; color: #1f2937; font-style: italic'
             if 'DISPONIBLE' in v: return 'background-color: #e6f3ff; color: #004080'
             return 'background-color: #ccf5ff; color: #005580;'
 
@@ -149,7 +161,7 @@ if df_raw is not None:
                 audit.append({
                     "Empleado": e, "Contrato": dia_l, "Trabajó Finde": f_t, 
                     "Compensatorios": len(g[g['Turno'] == 'DESC. COMPENSATORIO']),
-                    "Total Descansos": len(g[g['Turno'].str.contains("DESC")]),
+                    "Recuperación Noche": len(g[g['Turno'] == 'DESC. RECUPERACION']),
                     "Estado": "✅ Correcto" if (f_t + len(g[g['Turno'] == 'DESC. LEY']) == len(g[g['Nom_Dia'] == dia_l])) else "⚠️"
                 })
             st.table(pd.DataFrame(audit))
