@@ -7,10 +7,7 @@ import os
 
 # --- 1. CONFIGURACIÓN ---
 st.set_page_config(page_title="MovilGo Pro", layout="wide", page_icon="⚡")
-# Definimos los turnos operativos y los de disponibilidad
-TURNOS_OP = ["AM", "PM", "Noche"]
-TURNOS_DISP = ["DISPONIBLE AM", "DISPONIBLE PM", "DISPONIBLE NOCHE"]
-TODOS_TURNOS = TURNOS_OP + TURNOS_DISP
+LISTA_TURNOS = ["AM", "PM", "Noche"]
 
 # --- 2. ESTILOS CORPORATIVOS ---
 st.markdown("""
@@ -20,12 +17,13 @@ st.markdown("""
     .stApp { background-color: #f8fafc; }
     .login-box { background-color: #ffffff; padding: 45px; border-radius: 20px; box-shadow: 0 15px 35px rgba(0,0,0,0.06); border: 1px solid #e2e8f0; }
     h1.movilgo-title { color: #1a365d; font-weight: 800; text-transform: uppercase; letter-spacing: 5px; text-align: center; font-size: 3.2rem !important; }
+    .logo-footer-container { display: flex; justify-content: center; align-items: center; gap: 50px; margin-top: 40px; }
     div.stButton > button { background-color: #2563eb; color: white; font-weight: bold; border-radius: 10px; height: 52px; border: none; }
     .stTabs [aria-selected="true"] { background-color: #1a365d !important; color: white !important; border-radius: 5px; }
     </style>
     """, unsafe_allow_html=True)
 
-# --- 3. LOGIN (Se mantiene igual) ---
+# --- 3. LOGIN ---
 def login_page():
     if 'auth' not in st.session_state: st.session_state['auth'] = False
     if not st.session_state['auth']:
@@ -43,11 +41,15 @@ def login_page():
                         st.session_state['auth'] = True; st.session_state['user_name'] = "Richard Guevara"; st.rerun()
                     else: st.error("Credenciales Incorrectas")
             st.markdown("</div>", unsafe_allow_html=True)
+            st.markdown("<div class='logo-footer-container'>", unsafe_allow_html=True)
+            for lp in ["logo_empresa_1.png", "logo_empresa_3.png", "logo_empresa_2.png"]:
+                if os.path.exists(lp): st.image(lp, width=130)
+            st.markdown("</div>", unsafe_allow_html=True)
         st.stop()
 
 login_page()
 
-# --- 4. CARGA DE DATOS ---
+# --- 4. MOTOR Y LÓGICA ---
 @st.cache_data
 def load_data():
     try:
@@ -68,58 +70,36 @@ if df_raw is not None:
         mes_sel = st.selectbox("Mes", ["Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio", "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"], index=datetime.now().month - 1)
         mes_num = ["Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio", "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"].index(mes_sel) + 1
         cargo_sel = st.selectbox("Cargo", sorted(df_raw['cargo'].unique()))
-        cupo_manual = st.number_input("Cupo Operativo por Turno", 1, 10, 2)
+        cupo_manual = st.number_input("Cupo por Turno", 1, 10, 2)
 
     num_dias = calendar.monthrange(ano_sel, mes_num)[1]
     dias_info = [{"n": d, "nombre": ["Lun", "Mar", "Mie", "Jue", "Vie", "Sab", "Dom"][datetime(ano_sel, mes_num, d).weekday()], "semana": (d + datetime(ano_sel, mes_num, 1).weekday() - 1) // 7 + 1, "label": f"{d} - {['Lun', 'Mar', 'Mie', 'Jue', 'Vie', 'Sab', 'Dom'][datetime(ano_sel, mes_num, d).weekday()]}"} for d in range(1, num_dias + 1)]
 
-    if st.button("🚀 GENERAR MALLA OPTIMIZADA"):
+    if st.button("🚀 GENERAR MALLA ÓPTIMA"):
         df_f = df_raw[df_raw['cargo'] == cargo_sel].copy()
         prob = LpProblem("MovilGo_Final", LpMaximize)
+        asig = LpVariable.dicts("Asig", (df_f['nombre'], range(1, num_dias + 1), LISTA_TURNOS), cat='Binary')
         
-        # Variables de asignación
-        asig = LpVariable.dicts("Asig", (df_f['nombre'], range(1, num_dias + 1), TODOS_TURNOS), cat='Binary')
-        # Variables de cambio de turno (para evitar rotación)
-        cambio = LpVariable.dicts("Cambio", (df_f['nombre'], range(2, num_dias + 1)), cat='Binary')
-
-        # OBJETIVO: Maximizar trabajo + Penalizar cambios de turno para dar estabilidad
-        prob += lpSum([asig[e][d][t] for e in df_f['nombre'] for d in range(1, num_dias + 1) for t in TODOS_TURNOS]) - \
-                lpSum([cambio[e][d] * 0.5 for e in df_f['nombre'] for d in range(2, num_dias + 1)])
+        prob += lpSum([asig[e][d][t] for e in df_f['nombre'] for d in range(1, num_dias + 1) for t in LISTA_TURNOS])
 
         for di in dias_info:
-            d = di["n"]
-            for t_op in TURNOS_OP:
-                # El cupo manual solo aplica a turnos operativos (AM, PM, Noche)
-                prob += lpSum([asig[e][d][t_op] for e in df_f['nombre']]) <= cupo_manual
+            for t in LISTA_TURNOS:
+                prob += lpSum([asig[e][di["n"]][t] for e in df_f['nombre']]) <= cupo_manual
 
         for _, row in df_f.iterrows():
             e = row['nombre']
             dia_ley = "Sab" if "sab" in str(row['descanso_ley']).lower() else "Dom"
             
             for d in range(1, num_dias + 1):
-                # Solo un turno al día (sea operativo o disponible)
-                prob += lpSum([asig[e][d][t] for t in TODOS_TURNOS]) <= 1
-                
-                # REGLA 3: Descanso obligatorio después de Noche
+                prob += lpSum([asig[e][d][t] for t in LISTA_TURNOS]) <= 1
                 if d < num_dias:
-                    # Si hoy hace Noche o DISPONIBLE NOCHE, mañana debe ser DESCANSO (nada asignado)
-                    prob += asig[e][d]["Noche"] + lpSum([asig[e][d+1][t] for t in TODOS_TURNOS]) <= 1
-                    prob += asig[e][d]["DISPONIBLE NOCHE"] + lpSum([asig[e][d+1][t] for t in TODOS_TURNOS]) <= 1
-                    
-                    # Otras protecciones de sueño (PM a AM)
+                    prob += asig[e][d]["Noche"] + asig[e][d+1]["AM"] <= 1
+                    prob += asig[e][d]["Noche"] + asig[e][d+1]["PM"] <= 1
                     prob += asig[e][d]["PM"] + asig[e][d+1]["AM"] <= 1
-                    prob += asig[e][d]["DISPONIBLE PM"] + asig[e][d+1]["DISPONIBLE AM"] <= 1
-
-                # REGLA 2: Lógica para penalizar cambios de turno (Estabilidad)
-                if d > 1:
-                    for t in TODOS_TURNOS:
-                        # Si el turno de hoy es diferente al de ayer, 'cambio' debe ser 1
-                        prob += asig[e][d][t] - asig[e][d-1][t] <= cambio[e][d]
-
-            # REGLA DE LEY: Máximo 2 días de ley trabajados
+            
             dias_criticos = [di["n"] for di in dias_info if di["nombre"] == dia_ley]
-            prob += lpSum([asig[e][d][t] for d in dias_criticos for t in TODOS_TURNOS]) <= (len(dias_criticos) - 2)
-            prob += lpSum([asig[e][d][t] for d in range(1, num_dias + 1) for t in TODOS_TURNOS]) >= 18
+            prob += lpSum([asig[e][d][t] for d in dias_criticos for t in LISTA_TURNOS]) <= (len(dias_criticos) - 2)
+            prob += lpSum([asig[e][d][t] for d in range(1, num_dias + 1) for t in LISTA_TURNOS]) >= 17
 
         prob.solve(PULP_CBC_CMD(msg=0))
 
@@ -128,7 +108,7 @@ if df_raw is not None:
             for di in dias_info:
                 for e in df_f['nombre']:
                     t_asig = "---"
-                    for t in TODOS_TURNOS:
+                    for t in LISTA_TURNOS:
                         if value(asig[e][di["n"]][t]) == 1: t_asig = t
                     res_list.append({"Dia": di["n"], "Label": di["label"], "Semana": di["semana"], "Nom_Dia": di["nombre"], "Empleado": e, "Turno": t_asig, "Ley_Descanso": df_f[df_f['nombre']==e]['descanso_ley'].values[0]})
             
@@ -138,23 +118,27 @@ if df_raw is not None:
                 grupo = grupo.sort_values("Dia").copy()
                 dia_ley_nom = "Sab" if "sab" in str(grupo['Ley_Descanso'].iloc[0]).lower() else "Dom"
                 
-                # 1. Marcar descansos fijos de contrato
+                # 1. Marcar descansos fijos
                 idx_fijos = grupo[(grupo['Turno'] == '---') & (grupo['Nom_Dia'] == dia_ley_nom)].head(2).index
                 grupo.loc[idx_fijos, 'Turno'] = 'DESC. LEY'
                 
-                # 2. Compensatorios obligatorios L-V
-                findes_trab = grupo[(grupo['Nom_Dia'] == dia_ley_nom) & (grupo['Turno'] != '---') & (grupo['Turno'] != 'DESC. LEY')]
+                # 2. Compensatorios L-V
+                findes_trab = grupo[(grupo['Nom_Dia'] == dia_ley_nom) & (grupo['Turno'].isin(LISTA_TURNOS))]
                 for _, row_f in findes_trab.iterrows():
                     hueco = grupo[(grupo['Dia'] > row_f['Dia']) & (grupo['Dia'] <= row_f['Dia'] + 7) & (grupo['Turno'] == '---') & (~grupo['Nom_Dia'].isin(['Sab', 'Dom']))].head(1)
                     if not hueco.empty:
                         grupo.loc[hueco.index, 'Turno'] = 'DESC. COMPENSATORIO'
                 
-                # 3. Limpieza final para días que quedaron vacíos (---)
-                grupo.loc[grupo['Turno'] == '---', 'Turno'] = 'LIBRE'
+                # 3. DISPONIBILIDAD CON TURNO (Punto solicitado)
+                # Buscamos el turno predominante de este empleado en el mes para asignarle la disponibilidad coherente
+                turnos_reales = grupo[grupo['Turno'].isin(LISTA_TURNOS)]['Turno'].mode()
+                turno_base = turnos_reales[0] if not turnos_reales.empty else "AM"
+                
+                grupo.loc[grupo['Turno'] == '---', 'Turno'] = f"DISPONIBLE {turno_base}"
                 lista_final.append(grupo)
             
             st.session_state['df_final'] = pd.concat(lista_final).reset_index(drop=True)
-            st.success("✅ Malla Generada con Estabilidad de Turno y Disponibilidad Fija")
+            st.success("✅ Malla Generada con Disponibilidad Asignada")
 
     if 'df_final' in st.session_state:
         df_v = st.session_state['df_final']
@@ -162,7 +146,6 @@ if df_raw is not None:
             if 'LEY' in v: return 'background-color: #ffb3b3; color: #b30000; font-weight: bold'
             if 'COMPENSATORIO' in v: return 'background-color: #ffd9b3; color: #804000; font-weight: bold'
             if 'DISPONIBLE' in v: return 'background-color: #e6f3ff; color: #004080'
-            if v in TURNOS_OP: return 'background-color: #ccf5ff; color: #005580; font-weight: bold'
             return ''
 
         t1, t2, t3 = st.tabs(["📅 Malla Operativa", "🔍 Filtro Empleado", "⚖️ Auditoría Legal"])
@@ -173,7 +156,6 @@ if df_raw is not None:
             audit = []
             for e, g in df_v.groupby("Empleado"):
                 dia_l = "Sab" if "sab" in str(g['Ley_Descanso'].iloc[0]).lower() else "Dom"
-                # Contamos como "trabajado" cualquier turno operativo o de disponibilidad en su día de descanso
-                f_t = len(g[(g['Nom_Dia'] == dia_l) & (g['Turno'].isin(TODOS_TURNOS))])
+                f_t = len(g[(g['Nom_Dia'] == dia_l) & (g['Turno'].isin(LISTA_TURNOS))])
                 audit.append({"Empleado": e, "Día Ley": dia_l, "Días Ley Trabajados": f_t, "Compensatorios": len(g[g['Turno'] == 'DESC. COMPENSATORIO']), "Estado": "✅ Cumple" if len(g[g['Turno'] == 'DESC. COMPENSATORIO']) >= f_t else "⚠️ Pendiente"})
             st.table(pd.DataFrame(audit))
