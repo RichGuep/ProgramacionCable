@@ -20,7 +20,7 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
-# --- 2. LOGIN (CORREGIDO) ---
+# --- 2. LOGIN ---
 def login_page():
     if 'auth' not in st.session_state: st.session_state['auth'] = False
     if not st.session_state['auth']:
@@ -28,12 +28,10 @@ def login_page():
         with col_login:
             st.markdown("<br><br>", unsafe_allow_html=True)
             st.markdown("<h1 style='text-align:center; color:#1a365d;'>MovilGo</h1>", unsafe_allow_html=True)
-            # El form debe envolver al botón obligatoriamente
             with st.form("LoginForm"):
                 user = st.text_input("Correo Corporativo")
                 pwd = st.text_input("Contraseña", type="password")
                 submit = st.form_submit_button("INGRESAR")
-                
                 if submit:
                     if user == "richard.guevara@greenmovil.com.co" and pwd == "Admin2026":
                         st.session_state['auth'] = True
@@ -77,7 +75,7 @@ if df_raw is not None:
         prog_bar = st.progress(0)
         status = st.empty()
         
-        status.text("10% - Analizando personal...")
+        status.text("10% - Procesando personal...")
         df_f = df_raw[df_raw['cargo'] == cargo_sel].copy()
         prob = LpProblem("MovilGo_Final", LpMaximize)
         
@@ -85,10 +83,7 @@ if df_raw is not None:
         t_sem = LpVariable.dicts("TSem", (df_f['nombre'], semanas.keys(), LISTA_TURNOS), cat='Binary')
         hueco = LpVariable.dicts("Hueco", (range(1, num_dias + 1), LISTA_TURNOS), lowBound=0, cat='Integer')
 
-        status.text("40% - Aplicando reglas de estabilidad semanal...")
-        prog_bar.progress(40)
-        
-        # Objetivo: Cobertura total y penalizar huecos
+        # Objetivo: Cobertura total y estabilidad semanal
         prob += lpSum([asig[e][d][t] for e in df_f['nombre'] for d in range(1, num_dias + 1) for t in LISTA_TURNOS]) - \
                 lpSum([hueco[d][t] * 10000 for d in range(1, num_dias + 1) for t in LISTA_TURNOS])
 
@@ -107,18 +102,19 @@ if df_raw is not None:
         for _, row in df_f.iterrows():
             e = row['nombre']
             dia_l = "Sab" if "sab" in str(row['descanso_ley']).lower() else "Dom"
+            # Limitar descansos para no dar de más
             prob += lpSum([asig[e][d][t] for d in range(1, num_dias + 1) for t in LISTA_TURNOS]) >= (num_dias - 5)
             for d in range(1, num_dias + 1):
                 prob += lpSum([asig[e][d][t] for t in LISTA_TURNOS]) <= 1
                 if d < num_dias:
                     prob += asig[e][d]["Noche"] + lpSum([asig[e][d+1][t] for t in LISTA_TURNOS]) <= 1
 
-        status.text("70% - Optimizando cobertura...")
-        prog_bar.progress(70)
+        status.text("60% - Ejecutando motor de optimización...")
+        prog_bar.progress(60)
         prob.solve(PULP_CBC_CMD(msg=0, timeLimit=30))
 
         if LpStatus[prob.status] in ['Optimal', 'Not Solved']:
-            status.text("90% - Procesando etiquetas...")
+            status.text("90% - Generando etiquetas finales...")
             prog_bar.progress(90)
             res_list = []
             for d in range(1, num_dias + 1):
@@ -143,11 +139,12 @@ if df_raw is not None:
             st.session_state['df_final'] = df_res
             prog_bar.progress(100); time.sleep(1); status.empty(); prog_bar.empty()
         else:
-            st.error("No se pudo generar la malla. Revisa los cupos.")
+            st.error("No se pudo generar la malla con estos cupos.")
 
     # --- 4. RENDERIZADO ---
     if 'df_final' in st.session_state:
         df_v = st.session_state['df_final']
+        
         def style_v(v):
             if 'TITULAR' in v: return 'background-color: #d1fae5; color: #065f46; font-weight: bold;'
             if 'DISPONIBLE' in v: return 'background-color: #fef3c7; color: #92400e;'
@@ -157,13 +154,17 @@ if df_raw is not None:
         t1, t2, t3 = st.tabs(["📅 Malla Principal", "⚖️ Auditoría Reforma", "📊 Cobertura"])
         with t1:
             m_f = df_v.pivot(index='Empleado', columns='Label', values='Final')
-            st.dataframe(m_f[sorted(m_f.columns, key=lambda x: int(x.split(' - ')[0]))].style.applymap(style_v), use_container_width=True)
+            # SOLUCIÓN AL ATTRIBUTEERROR: Se usa .map() en lugar de .applymap()
+            cols_ordenadas = sorted(m_f.columns, key=lambda x: int(x.split(' - ')[0]))
+            st.dataframe(m_f[cols_ordenadas].style.map(style_v), use_container_width=True)
+            
         with t2:
             audit = []
             for e, g in df_v.groupby("Empleado"):
                 desc = len(g[g['Final'] == 'DESC. LEY'])
-                audit.append({"Empleado": e, "Descansos Fin de Semana": desc, "Cumple Reforma (2+2)": "✅" if desc >= 2 else "⚠️"})
+                audit.append({"Empleado": e, "Sáb/Dom Descansados": desc, "Cumple (2 fijos/mes)": "✅" if desc >= 2 else "⚠️"})
             st.table(pd.DataFrame(audit))
+            
         with t3:
             cob = df_v[df_v['Final'].str.contains('TITULAR')].copy()
             cob['Turno_Limpio'] = cob['Final'].str.replace('TITULAR ', '')
