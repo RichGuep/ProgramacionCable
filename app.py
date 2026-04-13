@@ -48,7 +48,7 @@ with st.sidebar:
 
     cargo_sel = st.selectbox("Cargo", sorted(df_raw['cargo'].unique()))
 
-# --- CUPOS AUTOMÁTICOS ---
+# --- CUPOS POR CARGO ---
 cupos_por_cargo = {
     "Master": 2,
     "Tecnico A": 7,
@@ -62,16 +62,20 @@ num_dias = calendar.monthrange(2026, mes_num)[1]
 cal = calendar.Calendar(firstweekday=0)
 semanas = [[d for d in sem if d != 0] for sem in cal.monthdayscalendar(2026, mes_num)]
 
+dias = list(range(1, num_dias + 1))
+turnos = ["AM", "PM", "Noche"]
+
 # --- 6. MOTOR ---
 if st.button("🚀 GENERAR MALLA"):
-    
+
     df_f = df_raw[df_raw['cargo'] == cargo_sel].copy()
+    empleados = df_f['nombre'].tolist()
+
+    # --- GRUPOS A/B ---
+    grupo_A = empleados[::2]
+    grupo_B = empleados[1::2]
 
     prob = LpProblem("Turnos", LpMaximize)
-
-    empleados = df_f['nombre'].tolist()
-    dias = range(1, num_dias + 1)
-    turnos = ["AM", "PM", "Noche"]
 
     # Variables
     asig = LpVariable.dicts("Asig", (empleados, dias, turnos), cat='Binary')
@@ -80,55 +84,66 @@ if st.button("🚀 GENERAR MALLA"):
     # --- OBJETIVO ---
     prob += lpSum(asig[e][d][t] for e in empleados for d in dias for t in turnos)
 
-    # --- RESTRICCIONES ---
-    for _, row in df_f.iterrows():
-        e = row['nombre']
+    # --- RESTRICCIONES GENERALES ---
+    for e in empleados:
 
-        # Día de descanso contractual
-        dia_ley = "Sab" if "sab" in str(row['descanso']).lower() else "Dom"
-
-        dias_fds = [d for d in dias if ["Lun","Mar","Mie","Jue","Vie","Sab","Dom"][datetime(2026, mes_num, d).weekday()] == dia_ley]
-
-        # --- MIN DESCANSOS FDS ---
-        min_desc = 2 if len(semanas) <= 4 else 3
-        prob += lpSum(descanso[e][d] for d in dias_fds) >= min_desc
-
-        # --- REGLAS DIARIAS ---
         for d in dias:
-            # Solo una cosa por día
+            # Solo una actividad por día
             prob += lpSum(asig[e][d][t] for t in turnos) + descanso[e][d] == 1
 
             if d < num_dias:
                 # No noche → siguiente día
                 prob += asig[e][d]["Noche"] + lpSum(asig[e][d+1][t] for t in turnos) <= 1
+
                 # No PM → AM
                 prob += asig[e][d]["PM"] + asig[e][d+1]["AM"] <= 1
 
-        # --- COMPENSATORIOS ---
-        for s_idx, semana in enumerate(semanas[:-1]):
-            for d in semana:
-                dia_sem = ["Lun","Mar","Mie","Jue","Vie","Sab","Dom"][datetime(2026, mes_num, d).weekday()]
+    # --- IDENTIFICAR SABADOS Y DOMINGOS ---
+    sabados = [d for d in dias if datetime(2026, mes_num, d).weekday() == 5]
+    domingos = [d for d in dias if datetime(2026, mes_num, d).weekday() == 6]
 
-                if dia_sem == dia_ley:
-                    dias_sig = [
-                        dia for dia in semanas[s_idx + 1]
-                        if ["Lun","Mar","Mie","Jue","Vie","Sab","Dom"][datetime(2026, mes_num, dia).weekday()] not in ["Sab", "Dom"]
-                    ]
+    # --- ROTACIÓN POR GRUPOS (CLAVE) ---
+    for i, semana in enumerate(semanas):
 
-                    if dias_sig:
-                        trabajo_fds = lpSum(asig[e][d][t] for t in turnos)
-                        prob += lpSum(descanso[e][dia] for dia in dias_sig) >= trabajo_fds
+        sab = [d for d in semana if d in sabados]
+        dom = [d for d in semana if d in domingos]
 
-    # --- COBERTURA POR TURNO ---
+        if not sab and not dom:
+            continue
+
+        grupo_descansa = grupo_A if i % 2 == 0 else grupo_B
+
+        for e in empleados:
+            if e in grupo_descansa:
+                for d in sab + dom:
+                    prob += descanso[e][d] == 1
+            else:
+                for d in sab + dom:
+                    prob += descanso[e][d] == 0
+
+    # --- COMPENSATORIOS FLEXIBLES ---
+    for i, semana in enumerate(semanas[:-1]):
+
+        dias_sig = [
+            d for d in semanas[i+1]
+            if datetime(2026, mes_num, d).weekday() < 5
+        ]
+
+        for e in empleados:
+            if dias_sig:
+                # máximo 2 compensatorios (flexible)
+                prob += lpSum(descanso[e][d] for d in dias_sig) <= 2
+
+    # --- COBERTURA POR TURNO (FLEXIBLE) ---
     for d in dias:
         for t in turnos:
-            prob += lpSum(asig[e][d][t] for e in empleados) == cupo_fijo
+            prob += lpSum(asig[e][d][t] for e in empleados) >= cupo_fijo
 
     # --- SOLVER ---
     prob.solve(PULP_CBC_CMD(msg=0, timeLimit=60))
 
     if LpStatus[prob.status] not in ['Optimal', 'Not Solved']:
-        st.error("❌ No se pudo generar solución (revisa cupos vs personal)")
+        st.error("❌ No se pudo generar solución (modelo muy restringido)")
     else:
         res = []
 
@@ -145,8 +160,7 @@ if st.button("🚀 GENERAR MALLA"):
                     "Dia": d,
                     "Label": f"{d}-{dn}",
                     "Empleado": e,
-                    "Turno": turno,
-                    "Ley": df_f[df_f['nombre']==e]['descanso'].values[0]
+                    "Turno": turno
                 })
 
         df_res = pd.DataFrame(res)
@@ -162,19 +176,13 @@ if st.button("🚀 GENERAR MALLA"):
                     df_res.at[idx, 'Final'] = f"TITULAR {t}" if i < cupo_fijo else f"DISPONIBLE {t}"
 
         for idx in df_res[df_res['Turno'] == "---"].index:
-            dia_nom = df_res.at[idx, 'Label'].split('-')[1]
-            ley = df_res.at[idx, 'Ley']
-
-            if ("sab" in str(ley).lower() and dia_nom == "Sab") or \
-               ("dom" in str(ley).lower() and dia_nom == "Dom"):
-                df_res.at[idx, 'Final'] = "DESC. LEY"
-            else:
-                df_res.at[idx, 'Final'] = "DESC. COMP."
+            df_res.at[idx, 'Final'] = "DESCANSO"
 
         st.session_state['df_final'] = df_res
 
 # --- 7. VISUALIZACIÓN ---
 if 'df_final' in st.session_state:
+
     df_v = st.session_state['df_final']
 
     st.subheader("📅 Malla Maestra")
@@ -185,8 +193,7 @@ if 'df_final' in st.session_state:
     def color(v):
         if "TITULAR" in v: return 'background-color:#cce5ff'
         if "DISPONIBLE" in v: return 'background-color:#d4edda'
-        if "LEY" in v: return 'background-color:#ff9900;color:white'
-        if "COMP" in v: return 'background-color:#ffd966'
+        if "DESCANSO" in v: return 'background-color:#ffd966'
         return ''
 
     st.dataframe(m[cols].style.map(color), use_container_width=True)
