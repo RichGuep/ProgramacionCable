@@ -14,6 +14,7 @@ def load_data():
 
 df_raw = load_data()
 
+# --- CONFIG ---
 meses = ["Enero","Febrero","Marzo","Abril","Mayo","Junio",
          "Julio","Agosto","Septiembre","Octubre","Noviembre","Diciembre"]
 
@@ -30,6 +31,7 @@ cupos_por_cargo = {
 
 cupo = cupos_por_cargo.get(cargo_sel, 2)
 
+# --- CALENDARIO ---
 num_dias = calendar.monthrange(2026, mes_num)[1]
 dias = list(range(1, num_dias + 1))
 turnos = ["AM", "PM", "Noche"]
@@ -47,7 +49,7 @@ if st.button("🚀 GENERAR MALLA FINAL"):
     asig = LpVariable.dicts("A", (empleados, dias, turnos), 0, 1, LpBinary)
     descanso = LpVariable.dicts("D", (empleados, dias), 0, 1, LpBinary)
 
-    # OBJETIVO: maximizar asignaciones (menos descanso)
+    # OBJETIVO: maximizar trabajo (minimizar descansos innecesarios)
     prob += lpSum(asig[e][d][t] for e in empleados for d in dias for t in turnos)
 
     # --- REGLAS BASE ---
@@ -59,10 +61,9 @@ if st.button("🚀 GENERAR MALLA FINAL"):
                 prob += asig[e][d]["Noche"] + lpSum(asig[e][d+1][t] for t in turnos) <= 1
                 prob += asig[e][d]["PM"] + asig[e][d+1]["AM"] <= 1
 
-    # --- FINES DE SEMANA (MINIMO 2) ---
+    # --- DESCANSO FIN DE SEMANA (mínimo 2) ---
     for _, row in df_f.iterrows():
         e = row['nombre']
-
         dia_ley = "Sab" if "sab" in str(row['descanso']).lower() else "Dom"
 
         dias_ley = [
@@ -72,10 +73,9 @@ if st.button("🚀 GENERAR MALLA FINAL"):
 
         prob += lpSum(descanso[e][d] for d in dias_ley) >= 2
 
-    # --- COMPENSATORIOS (1 SOLO SI TRABAJA FDS) ---
+    # --- COMPENSATORIOS EXACTOS ---
     for _, row in df_f.iterrows():
         e = row['nombre']
-
         dia_ley = "Sab" if "sab" in str(row['descanso']).lower() else "Dom"
 
         for i, semana in enumerate(semanas[:-1]):
@@ -91,9 +91,17 @@ if st.button("🚀 GENERAR MALLA FINAL"):
             ]
 
             if dias_fds and dias_sem_sig:
-                trabajo = lpSum(asig[e][d][t] for d in dias_fds for t in turnos)
 
-                prob += lpSum(descanso[e][d] for d in dias_sem_sig) <= trabajo
+                trabajo_fds = lpSum(asig[e][d][t] for d in dias_fds for t in turnos)
+
+                # EXACTAMENTE 1 compensatorio si trabajó
+                prob += lpSum(descanso[e][d] for d in dias_sem_sig) == trabajo_fds
+
+    # --- MAX 1 DESCANSO ENTRE SEMANA ---
+    for e in empleados:
+        for semana in semanas:
+            dias_sem = [d for d in semana if datetime(2026, mes_num, d).weekday() < 5]
+            prob += lpSum(descanso[e][d] for d in dias_sem) <= 1
 
     # --- COBERTURA ---
     for d in dias:
@@ -103,41 +111,47 @@ if st.button("🚀 GENERAR MALLA FINAL"):
     # --- SOLVER ---
     prob.solve(PULP_CBC_CMD(msg=0, timeLimit=60))
 
-    res = []
+    if LpStatus[prob.status] not in ['Optimal', 'Not Solved']:
+        st.error("❌ No se pudo generar solución")
+    else:
+        res = []
 
-    for d in dias:
-        dn = ["Lun","Mar","Mie","Jue","Vie","Sab","Dom"][datetime(2026, mes_num, d).weekday()]
+        for d in dias:
+            dn = ["Lun","Mar","Mie","Jue","Vie","Sab","Dom"][datetime(2026, mes_num, d).weekday()]
 
-        for e in empleados:
-            turno = None
+            for e in empleados:
+                turno = None
+                for t in turnos:
+                    if value(asig[e][d][t]) == 1:
+                        turno = t
+
+                res.append({
+                    "Empleado": e,
+                    "Dia": f"{d}-{dn}",
+                    "Turno": turno if turno else "DESCANSO"
+                })
+
+        df_res = pd.DataFrame(res)
+
+        # --- TITULAR / DISPONIBLE ---
+        df_res["Final"] = df_res["Turno"]
+
+        for d in dias:
             for t in turnos:
-                if value(asig[e][d][t]) == 1:
-                    turno = t
+                idxs = df_res[
+                    (df_res["Dia"].str.startswith(str(d))) &
+                    (df_res["Turno"] == t)
+                ].index
 
-            if turno:
-                estado = f"TITULAR {turno}"
-            else:
-                estado = "DESCANSO"
+                for i, idx in enumerate(idxs):
+                    if i < cupo:
+                        df_res.at[idx, "Final"] = f"TITULAR {t}"
+                    else:
+                        df_res.at[idx, "Final"] = f"DISPONIBLE {t}"
 
-            res.append({
-                "Empleado": e,
-                "Dia": f"{d}-{dn}",
-                "Estado": estado
-            })
+        df_res.loc[df_res["Turno"] == "DESCANSO", "Final"] = "DESCANSO"
 
-    df_res = pd.DataFrame(res)
-
-    # --- DISPONIBLES (CLAVE FINAL) ---
-    for d in dias:
-        for t in turnos:
-            idxs = df_res[
-                (df_res["Dia"].str.startswith(str(d))) &
-                (df_res["Estado"].str.contains(t))
-            ].index
-
-            for i, idx in enumerate(idxs):
-                if i >= cupo:
-                    df_res.at[idx, "Estado"] = f"DISPONIBLE {t}"
-
-    st.dataframe(df_res.pivot(index="Empleado", columns="Dia", values="Estado"),
-                 use_container_width=True)
+        st.dataframe(
+            df_res.pivot(index="Empleado", columns="Dia", values="Final"),
+            use_container_width=True
+        )
