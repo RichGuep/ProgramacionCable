@@ -40,7 +40,7 @@ def login_page():
 
 login_page()
 
-# --- 4. MOTOR DE OPTIMIZACIÓN ---
+# --- 4. MOTOR DE OPTIMIZACIÓN (CON ESTABILIDAD RECUPERADA) ---
 @st.cache_data
 def load_data():
     try:
@@ -62,7 +62,8 @@ if df_raw is not None:
         mes_num = ["Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio", "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"].index(mes_sel) + 1
         cargo_sel = st.selectbox("Cargo", sorted(df_raw['cargo'].unique()))
         cupo_manual = st.number_input("Cupo por Turno", 1, 10, 2)
-        peso_estabilidad = st.slider("Estabilidad de Turno", 1, 100, 40)
+        # Prioridad alta por defecto para evitar saltos diarios de turno
+        peso_estabilidad = st.slider("Prioridad Estabilidad (Rotación)", 1, 100, 50)
 
     num_dias = calendar.monthrange(ano_sel, mes_num)[1]
     dias_range = range(1, num_dias + 1)
@@ -76,6 +77,7 @@ if df_raw is not None:
         asig = LpVariable.dicts("Asig", (nombres, dias_range, LISTA_TURNOS), cat='Binary')
         mantiene = LpVariable.dicts("Mantiene", (nombres, range(2, num_dias + 1), LISTA_TURNOS), cat='Binary')
         
+        # FO: Max asignación + Pesaje fuerte a la estabilidad (para que no cambien de AM a PM cada día)
         prob += lpSum([asig[e][d][t] for e in nombres for d in dias_range for t in LISTA_TURNOS]) + \
                 lpSum([mantiene[e][d][t] for e in nombres for d in range(2, num_dias + 1) for t in LISTA_TURNOS]) * peso_estabilidad
 
@@ -92,6 +94,8 @@ if df_raw is not None:
                     for t in LISTA_TURNOS:
                         prob += mantiene[e][d][t] <= asig[e][d][t]
                         prob += mantiene[e][d][t] <= asig[e][d-1][t]
+                
+                # --- HIGIENE RECUPERADA: Permite Noche tras Noche, bloquea Noche -> AM/PM ---
                 if d < num_dias:
                     prob += asig[e][d]["Noche"] + asig[e][d+1]["AM"] <= 1
                     prob += asig[e][d]["Noche"] + asig[e][d+1]["PM"] <= 1
@@ -99,7 +103,7 @@ if df_raw is not None:
             
             dias_criticos = [di["n"] for di in dias_info if di["nombre"] == dia_ley]
             prob += lpSum([asig[e][d][t] for d in dias_criticos for t in LISTA_TURNOS]) <= (len(dias_criticos) - 2)
-            prob += lpSum([asig[e][d][t] for d in dias_range for t in LISTA_TURNOS]) >= 15
+            prob += lpSum([asig[e][d][t] for d in dias_range for t in LISTA_TURNOS]) >= 16
 
         prob.solve(PULP_CBC_CMD(msg=0))
 
@@ -117,42 +121,38 @@ if df_raw is not None:
             for emp, grupo in df_res.groupby("Empleado"):
                 grupo = grupo.sort_values("Dia").copy()
                 dia_l = "Sab" if "sab" in str(grupo['Ley'].iloc[0]).lower() else "Dom"
-                # Marcar Ley
+                
+                # 1. Descansos Ley
                 idx_fijos = grupo[(grupo['Turno'] == '---') & (grupo['Nom_Dia'] == dia_l)].head(2).index
                 grupo.loc[idx_fijos, 'Turno'] = 'DESC. LEY'
-                # Marcar Compensatorios
+                
+                # 2. Compensatorios
                 findes_trab = grupo[(grupo['Nom_Dia'] == dia_l) & (grupo['Turno'].isin(LISTA_TURNOS))]
                 for _, r_f in findes_trab.iterrows():
                     hueco = grupo[(grupo['Dia'] > r_f['Dia']) & (grupo['Dia'] <= r_f['Dia'] + 7) & (grupo['Turno'] == '---') & (~grupo['Nom_Dia'].isin(['Sab', 'Dom']))].head(1)
                     if not hueco.empty: grupo.loc[hueco.index, 'Turno'] = 'DESC. COMPENSATORIO'
-                # Post Noche
+                
+                # 3. Post-Noche (Solo si el siguiente día está vacío y termina ciclo de Noche)
                 for i in range(len(grupo)-1):
                     if grupo.iloc[i]['Turno'] == 'Noche' and grupo.iloc[i+1]['Turno'] == '---':
                         grupo.iloc[i+1, grupo.columns.get_loc('Turno')] = 'DESC. POST-NOCHE'
+                
                 grupo.loc[grupo['Turno'] == '---', 'Turno'] = 'DISPONIBILIDAD'
                 lista_final.append(grupo)
             
             st.session_state['df_final'] = pd.concat(lista_final)
 
-    # --- 5. VISUALIZACIÓN Y KPIS ---
+    # --- 5. VISUALIZACIÓN, KPIS Y AUDITORÍA ---
     if 'df_final' in st.session_state:
         df_v = st.session_state['df_final']
 
-        # --- SECCIÓN KPIs ---
-        st.subheader("📊 Indicadores Clave de Desempeño (KPIs)")
+        # KPIs
+        st.subheader("📊 Resumen Operativo")
         k1, k2, k3, k4 = st.columns(4)
-        with k1:
-            total_asig = len(df_v[df_v['Turno'].isin(LISTA_TURNOS)])
-            st.markdown(f"<div class='metric-card'><div class='metric-title'>Turnos Asignados</div><div class='metric-val'>{total_asig}</div></div>", unsafe_allow_html=True)
-        with k2:
-            desc_ley = len(df_v[df_v['Turno'] == 'DESC. LEY'])
-            st.markdown(f"<div class='metric-card'><div class='metric-title'>Descansos de Ley</div><div class='metric-val'>{desc_ley}</div></div>", unsafe_allow_html=True)
-        with k3:
-            comp_tot = len(df_v[df_v['Turno'] == 'DESC. COMPENSATORIO'])
-            st.markdown(f"<div class='metric-card'><div class='metric-title'>Compensatorios</div><div class='metric-val'>{comp_tot}</div></div>", unsafe_allow_html=True)
-        with k4:
-            util_noche = len(df_v[df_v['Turno'] == 'Noche'])
-            st.markdown(f"<div class='metric-card'><div class='metric-title'>Cobertura Noche</div><div class='metric-val'>{util_noche}</div></div>", unsafe_allow_html=True)
+        with k1: st.markdown(f"<div class='metric-card'><div class='metric-title'>Turnos Totales</div><div class='metric-val'>{len(df_v[df_v['Turno'].isin(LISTA_TURNOS)])}</div></div>", unsafe_allow_html=True)
+        with k2: st.markdown(f"<div class='metric-card'><div class='metric-title'>Descansos Ley</div><div class='metric-val'>{len(df_v[df_v['Turno'] == 'DESC. LEY'])}</div></div>", unsafe_allow_html=True)
+        with k3: st.markdown(f"<div class='metric-card'><div class='metric-title'>Compensatorios</div><div class='metric-val'>{len(df_v[df_v['Turno'] == 'DESC. COMPENSATORIO'])}</div></div>", unsafe_allow_html=True)
+        with k4: st.markdown(f"<div class='metric-card'><div class='metric-title'>Turnos Noche</div><div class='metric-val'>{len(df_v[df_v['Turno'] == 'Noche'])}</div></div>", unsafe_allow_html=True)
 
         t1, t2, t3 = st.tabs(["📅 Malla Operativa", "⚖️ Auditoría Legal", "📥 Descargas"])
 
@@ -162,44 +162,30 @@ if df_raw is not None:
                 if v == 'DESC. COMPENSATORIO': return 'background-color: #ffd9b3; color: #804000; font-weight: bold'
                 if v == 'DESC. POST-NOCHE': return 'background-color: #d1fae5; color: #065f46; font-weight: bold'
                 if v == 'Noche': return 'background-color: #1e293b; color: white; font-weight: bold'
-                if v == 'DISPONIBILIDAD': return 'color: #94a3b8'
-                return ''
+                if v == 'DISPONIBILIDAD': return 'color: #94a3b8; font-size: 0.85rem'
+                return 'background-color: #ffffff; color: #1e293b;'
             
             m_f = df_v.pivot(index='Empleado', columns='Label', values='Turno')
             cols = sorted(m_f.columns, key=lambda x: int(x.split(' - ')[0]))
             st.dataframe(m_f[cols].style.map(style_map), use_container_width=True)
 
         with t2:
-            st.subheader("Auditoría por Persona")
             audit_data = []
             for e, g in df_v.groupby("Empleado"):
                 dia_l = "Sab" if "sab" in str(g['Ley'].iloc[0]).lower() else "Dom"
                 f_t = len(g[(g['Nom_Dia'] == dia_l) & (g['Turno'].isin(LISTA_TURNOS))])
                 audit_data.append({
-                    "Empleado": e,
-                    "Día Ley": dia_l,
-                    "Días Ley Trabajados": f_t,
-                    "Descansos Ley Tomados": len(g[g['Turno'] == 'DESC. LEY']),
-                    "Compensatorios Asignados": len(g[g['Turno'] == 'DESC. COMPENSATORIO']),
-                    "Turnos AM": len(g[g['Turno'] == 'AM']),
-                    "Turnos PM": len(g[g['Turno'] == 'PM']),
-                    "Turnos Noche": len(g[g['Turno'] == 'Noche']),
-                    "Estado": "✅ OK" if len(g[g['Turno'] == 'DESC. COMPENSATORIO']) >= f_t else "⚠️ Pendiente"
+                    "Empleado": e, "Día Ley": dia_l, "Laborados en Ley": f_t,
+                    "Desc. Ley Tomados": len(g[g['Turno'] == 'DESC. LEY']),
+                    "Compensatorios": len(g[g['Turno'] == 'DESC. COMPENSATORIO']),
+                    "AM": len(g[g['Turno'] == 'AM']), "PM": len(g[g['Turno'] == 'PM']), "Noche": len(g[g['Turno'] == 'Noche']),
+                    "Estado": "✅ Cumple" if len(g[g['Turno'] == 'DESC. COMPENSATORIO']) >= f_t else "⚠️ Pendiente"
                 })
             st.table(pd.DataFrame(audit_data))
 
         with t3:
-            st.subheader("Exportar Datos")
-            # Excel Download
             output = io.BytesIO()
             with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
                 m_f[cols].to_excel(writer, sheet_name='Malla')
                 pd.DataFrame(audit_data).to_excel(writer, sheet_name='Auditoria', index=False)
-            
-            st.download_button(
-                label="📥 Descargar Malla en Excel",
-                data=output.getvalue(),
-                file_name=f"Malla_{mes_sel}_{ano_sel}.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-            )
-            st.info("Para obtener PDF, puedes imprimir la página (Ctrl+P) o guardar el Excel como PDF.")
+            st.download_button(label="📥 Descargar Reporte Completo (Excel)", data=output.getvalue(), file_name=f"Malla_MovilGo_{mes_sel}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
