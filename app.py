@@ -17,7 +17,7 @@ st.markdown("""
     .stApp { background-color: #f8fafc; }
     .login-box { background-color: #ffffff; padding: 45px; border-radius: 20px; box-shadow: 0 15px 35px rgba(0,0,0,0.06); border: 1px solid #e2e8f0; }
     h1.movilgo-title { color: #1a365d; font-weight: 800; text-transform: uppercase; letter-spacing: 5px; text-align: center; font-size: 3.2rem !important; }
-    div.stButton > button { background-color: #2563eb; color: white; font-weight: bold; border-radius: 10px; height: 52px; }
+    div.stButton > button { background-color: #2563eb; color: white; font-weight: bold; border-radius: 10px; height: 52px; border: none; }
     </style>
     """, unsafe_allow_html=True)
 
@@ -65,30 +65,24 @@ if df_raw is not None:
         mes_num = ["Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio", "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"].index(mes_sel) + 1
         cargo_sel = st.selectbox("Cargo", sorted(df_raw['cargo'].unique()))
         cupo_manual = st.number_input("Cupo por Turno", 1, 10, 2)
-        peso_estabilidad = st.slider("Prioridad de Estabilidad", 1, 50, 20, help="A mayor valor, el motor preferirá mantener a la persona en el mismo turno toda la semana.")
+        peso_estabilidad = st.slider("Estabilidad de Turno", 1, 50, 30)
 
     num_dias = calendar.monthrange(ano_sel, mes_num)[1]
     dias_range = range(1, num_dias + 1)
     dias_info = [{"n": d, "nombre": ["Lun", "Mar", "Mie", "Jue", "Vie", "Sab", "Dom"][datetime(ano_sel, mes_num, d).weekday()], "label": f"{d} - {['Lun', 'Mar', 'Mie', 'Jue', 'Vie', 'Sab', 'Dom'][datetime(ano_sel, mes_num, d).weekday()]}"} for d in dias_range]
 
-    if st.button("🚀 GENERAR MALLA ESTABLE"):
+    if st.button("🚀 GENERAR MALLA OPTIMIZADA"):
         df_f = df_raw[df_raw['cargo'] == cargo_sel].copy()
         nombres = df_f['nombre'].tolist()
         
-        prob = LpProblem("MovilGo_Estable", LpMaximize)
-        
-        # Variables principales
+        prob = LpProblem("MovilGo_Block_Night", LpMaximize)
         asig = LpVariable.dicts("Asig", (nombres, dias_range, LISTA_TURNOS), cat='Binary')
-        
-        # VARIABLE DE ESTABILIDAD: Se activa si el empleado mantiene el mismo turno que el día anterior
         mantiene = LpVariable.dicts("Mantiene", (nombres, range(2, num_dias + 1), LISTA_TURNOS), cat='Binary')
         
-        # Objetivo: Maximizar asignación + Premiar la estabilidad
-        obj_asig = lpSum([asig[e][d][t] for e in nombres for d in dias_range for t in LISTA_TURNOS])
-        obj_estab = lpSum([mantiene[e][d][t] for e in nombres for d in range(2, num_dias + 1) for t in LISTA_TURNOS]) * peso_estabilidad
-        prob += obj_asig + obj_estab
+        # Objetivo: Max asignación + Estabilidad (para fomentar bloques del mismo turno)
+        prob += lpSum([asig[e][d][t] for e in nombres for d in dias_range for t in LISTA_TURNOS]) + \
+                lpSum([mantiene[e][d][t] for e in nombres for d in range(2, num_dias + 1) for t in LISTA_TURNOS]) * peso_estabilidad
 
-        # Restricciones
         for d in dias_range:
             for t in LISTA_TURNOS:
                 prob += lpSum([asig[e][d][t] for e in nombres]) <= cupo_manual
@@ -99,20 +93,20 @@ if df_raw is not None:
             
             for d in dias_range:
                 prob += lpSum([asig[e][d][t] for t in LISTA_TURNOS]) <= 1
-                
-                # Lógica de la variable "Mantiene" (Linealización)
                 if d > 1:
                     for t in LISTA_TURNOS:
-                        # mantiene[e][d][t] solo puede ser 1 si asig[e][d][t] AND asig[e][d-1][t] son 1
                         prob += mantiene[e][d][t] <= asig[e][d][t]
                         prob += mantiene[e][d][t] <= asig[e][d-1][t]
 
-                # Higiene sueño
+                # --- NUEVA LÓGICA DE NOCHE ---
                 if d < num_dias:
-                    prob += asig[e][d]["Noche"] + lpSum([asig[e][d+1][t] for t in LISTA_TURNOS]) <= 1
+                    # SI trabaja noche hoy (d), NO puede hacer AM ni PM mañana (d+1). 
+                    # Pero SI puede volver a trabajar de Noche.
+                    prob += asig[e][d]["Noche"] + asig[e][d+1]["AM"] <= 1
+                    prob += asig[e][d]["Noche"] + asig[e][d+1]["PM"] <= 1
+                    # Protección PM a AM
                     prob += asig[e][d]["PM"] + asig[e][d+1]["AM"] <= 1
             
-            # Ley
             dias_criticos = [di["n"] for di in dias_info if di["nombre"] == dia_ley]
             prob += lpSum([asig[e][d][t] for d in dias_criticos for t in LISTA_TURNOS]) <= (len(dias_criticos) - 2)
             prob += lpSum([asig[e][d][t] for d in dias_range for t in LISTA_TURNOS]) >= 17
@@ -128,21 +122,25 @@ if df_raw is not None:
                         if value(asig[e][d_idx["n"]][t]) == 1: t_asig = t
                     res_list.append({"Dia": d_idx["n"], "Label": d_idx["label"], "Nom_Dia": d_idx["nombre"], "Empleado": e, "Turno": t_asig, "Ley": df_f[df_f['nombre']==e]['descanso_ley'].values[0]})
             
-            # Procesamiento de descansos (Igual al anterior)
             df_res = pd.DataFrame(res_list)
             lista_final = []
             for emp, grupo in df_res.groupby("Empleado"):
                 grupo = grupo.sort_values("Dia").copy()
                 dia_l = "Sab" if "sab" in str(grupo['Ley'].iloc[0]).lower() else "Dom"
+                
+                # 1. Descansos Ley
                 idx_fijos = grupo[(grupo['Turno'] == '---') & (grupo['Nom_Dia'] == dia_l)].head(2).index
                 grupo.loc[idx_fijos, 'Turno'] = 'DESC. LEY'
                 
+                # 2. Compensatorios
                 findes_trab = grupo[(grupo['Nom_Dia'] == dia_l) & (grupo['Turno'].isin(LISTA_TURNOS))]
                 for _, r_f in findes_trab.iterrows():
                     hueco = grupo[(grupo['Dia'] > r_f['Dia']) & (grupo['Dia'] <= r_f['Dia'] + 7) & (grupo['Turno'] == '---') & (~grupo['Nom_Dia'].isin(['Sab', 'Dom']))].head(1)
                     if not hueco.empty: grupo.loc[hueco.index, 'Turno'] = 'DESC. COMPENSATORIO'
 
+                # 3. Post-Noche solo al finalizar el bloque de noches
                 for i in range(len(grupo)-1):
+                    # Si hoy fue noche y mañana está libre (---), es un descanso post-noche legítimo
                     if grupo.iloc[i]['Turno'] == 'Noche' and grupo.iloc[i+1]['Turno'] == '---':
                         grupo.iloc[i+1, grupo.columns.get_loc('Turno')] = 'DESC. POST-NOCHE'
                 
@@ -150,17 +148,17 @@ if df_raw is not None:
                 lista_final.append(grupo)
             
             st.session_state['df_final'] = pd.concat(lista_final)
-            st.success("✅ Malla Generada con Estabilidad de Turno.")
+            st.success("✅ Malla Generada: Noches consecutivas permitidas.")
 
     if 'df_final' in st.session_state:
-        # (Aquí va el mismo código de visualización con .style.map() del script anterior)
         df_v = st.session_state['df_final']
         def style_map(v):
             if v == 'DESC. LEY': return 'background-color: #ffb3b3; color: #b30000; font-weight: bold'
             if v == 'DESC. COMPENSATORIO': return 'background-color: #ffd9b3; color: #804000; font-weight: bold'
             if v == 'DESC. POST-NOCHE': return 'background-color: #d1fae5; color: #065f46; font-weight: bold'
-            if v == 'DISPONIBILIDAD': return 'background-color: #e6f3ff; color: #004080'
+            if v == 'DISPONIBILIDAD': return 'background-color: #f1f5f9; color: #64748b'
             if v == 'Noche': return 'background-color: #1e293b; color: white; font-weight: bold'
+            if v in ['AM', 'PM']: return 'background-color: #ffffff; color: #1e293b; border: 1px solid #e2e8f0'
             return ''
 
         m_f = df_v.pivot(index='Empleado', columns='Label', values='Turno')
