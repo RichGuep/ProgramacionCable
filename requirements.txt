@@ -1,4 +1,6 @@
 streamlit
 pandas
 pulp
+fastapi
+uvicorn
 openpyxl
