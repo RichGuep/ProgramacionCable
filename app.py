@@ -8,18 +8,24 @@ import os
 # --- 1. CONFIGURACIÓN Y PARÁMETROS LEGALES 2026 ---
 st.set_page_config(page_title="MovilGo Pro - Reforma 2026", layout="wide", page_icon="⚡")
 
-JORNADA_DIARIA_LEGAL = 7.33  # 7h 20min
-VALOR_HORA_FACTOR = 182      # Horas mensuales promedio para 42h semanales
+# Parámetros Reforma Laboral Colombia 2026
+JORNADA_DIARIA_LEGAL = 7.33  # 7 horas y 20 minutos
+VALOR_HORA_FACTOR = 182      # Horas mensuales promedio (42h semanales / 6 días)
+INICIO_NOCTURNO = 19         # 7:00 PM
 LISTA_TURNOS = ["AM", "PM", "Noche"]
 
-# Definición de turnos y sus horas nocturnas (Post-19:00)
-# AM: 05:30 - 13:30 (0h nocturnas)
-# PM: 13:30 - 21:30 (2.5h nocturnas: de 19:00 a 21:30)
-# Noche: 21:30 - 05:30 (8h nocturnas: todas están en rango 19:00-06:00)
+# Configuración de horas nocturnas por turno (Post-19:00)
+# PM: 13:30 a 21:30 -> tiene 2.5h nocturnas (19:00 a 21:30)
+# Noche: 21:30 a 05:30 -> tiene 8h nocturnas
 INFO_TURNOS = {
-    "AM": {"inicio": 5.5, "fin": 13.5, "nocturnas": 0},
-    "PM": {"inicio": 13.5, "fin": 21.5, "nocturnas": 2.5},
-    "Noche": {"inicio": 21.5, "fin": 5.5, "nocturnas": 8}
+    "AM": {"nocturnas": 0},
+    "PM": {"nocturnas": 2.5},
+    "Noche": {"nocturnas": 8}
+}
+
+MESES_MAP = {
+    "Enero": 1, "Febrero": 2, "Marzo": 3, "Abril": 4, "Mayo": 5, "Junio": 6,
+    "Julio": 7, "Agosto": 8, "Septiembre": 9, "Octubre": 10, "Noviembre": 11, "Diciembre": 12
 }
 
 # --- 2. ESTILOS ---
@@ -27,123 +33,139 @@ st.markdown("""
     <style>
     @import url('https://fonts.cdnfonts.com/css/century-gothic');
     html, body, [class*="st-"], div, span, p, text { font-family: 'Century Gothic', sans-serif !important; }
-    .stMetric { background-color: #ffffff; padding: 15px; border-radius: 10px; box-shadow: 0 2px 4px rgba(0,0,0,0.05); }
+    .stMetric { background-color: #ffffff; padding: 15px; border-radius: 10px; box-shadow: 0 2px 4px rgba(0,0,0,0.05); border: 1px solid #eee; }
     </style>
     """, unsafe_allow_html=True)
 
-# --- 3. LÓGICA DE LOGIN (Simplificada para el ejemplo) ---
-def login():
-    if 'auth' not in st.session_state: st.session_state['auth'] = False
-    if not st.session_state['auth']:
-        col1, col2, col3 = st.columns([1, 2, 1])
-        with col2:
-            st.title("MovilGo Pro 2026")
-            with st.form("login"):
-                u = st.text_input("Usuario")
-                p = st.text_input("Password", type="password")
-                if st.form_submit_button("Entrar"):
-                    if u == "admin" and p == "admin": 
-                        st.session_state['auth'] = True
-                        st.rerun()
-        st.stop()
-
-login()
-
-# --- 4. CARGA DE DATOS ---
+# --- 3. CARGA DE DATOS ---
 @st.cache_data
 def load_data():
     try:
         df = pd.read_excel("empleados.xlsx")
         df.columns = df.columns.str.strip().str.lower()
+        # Asegurar columnas mínimas
+        if 'salario' not in df.columns: df['salario'] = 1300000 
         return df
     except:
-        # Dataframe de ejemplo si no existe el archivo
+        st.warning("No se encontró 'empleados.xlsx'. Cargando datos de prueba.")
         return pd.DataFrame({
-            'nombre': ['Juan Perez', 'Maria Lopez', 'Carlos Ruiz', 'Ana Silva'],
-            'cargo': ['tecnico A', 'tecnico A', 'master', 'tecnico B'],
-            'descanso': ['domingo', 'domingo', 'sabado', 'domingo'],
-            'salario': [1500000, 1500000, 2500000, 1300000]
+            'nombre': ['OPERADOR 1', 'OPERADOR 2', 'MASTER 1'],
+            'cargo': ['tecnico A', 'tecnico A', 'master'],
+            'descanso': ['domingo', 'domingo', 'sabado'],
+            'salario': [1400000, 1400000, 2600000]
         })
 
 df_raw = load_data()
 
-# --- 5. SIDEBAR / PARAMETRIZACIÓN ---
+# --- 4. INTERFAZ DE USUARIO ---
 with st.sidebar:
-    st.header("⚙️ Configuración 2026")
-    ano_sel = st.selectbox("Año", [2026], index=0)
-    mes_sel = st.selectbox("Mes", ["Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio", "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"], index=datetime.now().month - 1)
-    mes_num = list(calendar.month_name).index(mes_sel if mes_sel != "Enero" else "January") # Fix simple para nombres en español
-    
+    st.title("⚡ MovilGo Pro 2026")
     st.markdown("---")
-    st.subheader("💰 Recargos Reforma")
+    ano_sel = st.selectbox("Año", [2026, 2027], index=0)
+    mes_sel = st.selectbox("Mes", list(MESES_MAP.keys()), index=datetime.now().month - 1)
+    mes_num = MESES_MAP[mes_sel]
+    
+    st.header("⚖️ Parámetros Reforma")
     r_nocturno = st.number_input("Recargo Nocturno (%)", value=35) / 100
     r_extra = st.number_input("Extra Diurna (%)", value=25) / 100
     r_dominical = st.number_input("Recargo Dominical (%)", value=75) / 100
+    
+    cargo_sel = st.selectbox("Filtrar por Cargo", sorted(df_raw['cargo'].unique()))
+    cupo_manual = st.number_input("Cupo por Turno", 1, 10, 2)
 
-# --- 6. MOTOR DE OPTIMIZACIÓN ---
+# --- 5. LÓGICA DE OPTIMIZACIÓN Y CÁLCULOS ---
 num_dias = calendar.monthrange(ano_sel, mes_num)[1]
-dias_info = [{"n": d, "nombre": ["Lun", "Mar", "Mie", "Jue", "Vie", "Sab", "Dom"][datetime(ano_sel, mes_num, d).weekday()], "label": f"{d}-{['Lun', 'Mar', 'Mie', 'Jue', 'Vie', 'Sab', 'Dom'][datetime(ano_sel, mes_num, d).weekday()]}"} for d in range(1, num_dias + 1)]
+dias_info = []
+for d in range(1, num_dias + 1):
+    fecha = datetime(ano_sel, mes_num, d)
+    dias_info.append({
+        "n": d,
+        "nombre": ["Lun", "Mar", "Mie", "Jue", "Vie", "Sab", "Dom"][fecha.weekday()],
+        "label": f"{d} - {['Lun', 'Mar', 'Mie', 'Jue', 'Vie', 'Sab', 'Dom'][fecha.weekday()]}"
+    })
 
-if st.button("🚀 GENERAR MALLA Y AUDITORÍA"):
-    # (Lógica de optimización similar a tu script original...)
-    # Por brevedad, simulamos la resolución exitosa con los parámetros de la imagen
-    df_f = df_raw.copy()
+if st.button("🚀 GENERAR MALLA ÓPTIMA Y AUDITORÍA"):
+    df_f = df_raw[df_raw['cargo'] == cargo_sel].copy()
     
-    # [Aquí iría el código de PuLP que ya tienes...]
-    # Simulamos que ya tenemos df_final con la columna 'Turno' asignada
+    # Modelo Matemático
+    prob = LpProblem("Optimizacion_MovilGo", LpMaximize)
+    asig = LpVariable.dicts("Asig", (df_f['nombre'], range(1, num_dias + 1), LISTA_TURNOS), cat='Binary')
     
-    # --- 7. CÁLCULOS DE AUDITORÍA Y MONETIZACIÓN ---
-    def calcular_detalles_legales(row):
-        if row['Turno'] not in LISTA_TURNOS:
-            return pd.Series([0, 0, 0, 0])
+    # Función Objetivo: Maximizar cobertura
+    prob += lpSum([asig[e][d][t] for e in df_f['nombre'] for d in range(1, num_dias + 1) for t in LISTA_TURNOS])
+
+    # Restricciones
+    for d in range(1, num_dias + 1):
+        for t in LISTA_TURNOS:
+            prob += lpSum([asig[e][d][t] for e in df_f['nombre']]) <= cupo_manual
+
+    for e in df_f['nombre']:
+        # Máximo un turno al día
+        for d in range(1, num_dias + 1):
+            prob += lpSum([asig[e][d][t] for t in LISTA_TURNOS]) <= 1
+        # Mínimo de días trabajados al mes (aprox 22-24 días)
+        prob += lpSum([asig[e][d][t] for d in range(1, num_dias + 1) for t in LISTA_TURNOS]) >= 20
+
+    prob.solve(PULP_CBC_CMD(msg=0))
+
+    if LpStatus[prob.status] == 'Optimal':
+        res_list = []
+        for d_inf in dias_info:
+            for _, row in df_f.iterrows():
+                e = row['nombre']
+                t_asig = "DISPONIBILIDAD"
+                for t in LISTA_TURNOS:
+                    if value(asig[e][d_inf["n"]][t]) == 1:
+                        t_asig = t
+                
+                # --- CÁLCULOS DE AUDITORÍA MONETARIA ---
+                h_extra = 0; h_noc = 0; costo_dia = 0
+                v_hora = row['salario'] / VALOR_HORA_FACTOR
+                
+                if t_asig in LISTA_TURNOS:
+                    h_extra = max(0, 8 - JORNADA_DIARIA_LEGAL) # 8h de turno vs 7.33h ley
+                    h_noc = INFO_TURNOS[t_asig]['nocturnas']
+                    
+                    # Calcular Pesos
+                    costo_dia += h_extra * (v_hora * (1 + r_extra))
+                    costo_dia += h_noc * (v_hora * r_nocturno)
+                    if d_inf["nombre"] == "Dom":
+                        costo_dia += 8 * (v_hora * r_dominical)
+
+                res_list.append({
+                    "Empleado": e, "Dia": d_inf["label"], "Nom_Dia": d_inf["nombre"],
+                    "Turno": t_asig, "H_Extra": h_extra, "H_Nocturnas": h_noc, 
+                    "Costo_Recargos": round(costo_dia, 0), "Salario_Base": row['salario']
+                })
         
-        # Horas totales de turno físico: 8h (según tu imagen entrada/salida)
-        h_fisicas = 8 
-        h_extra = max(0, h_fisicas - JORNADA_DIARIA_LEGAL)
-        h_nocturnas = INFO_TURNOS[row['Turno']]['nocturnas']
+        st.session_state['df_final'] = pd.DataFrame(res_list)
+        st.success("✅ Malla generada con éxito aplicando Reforma 2026")
+
+# --- 6. TABS DE RESULTADOS ---
+if 'df_final' in st.session_state:
+    df_res = st.session_state['df_final']
+    t1, t2, t3 = st.tabs(["📅 Malla Operativa", "🔍 Auditoría de Costos", "📈 Resumen Ejecutivo"])
+
+    with t1:
+        malla_pivoted = df_res.pivot(index='Empleado', columns='Dia', values='Turno')
+        st.dataframe(malla_pivoted, use_container_width=True)
+
+    with t2:
+        st.subheader("Cálculo de Recargos y Horas Extra (Ley 2026)")
+        resumen_emp = df_res.groupby("Empleado").agg({
+            "H_Extra": "sum",
+            "H_Nocturnas": "sum",
+            "Costo_Recargos": "sum",
+            "Salario_Base": "first"
+        })
+        resumen_emp["Total_a_Pagar"] = resumen_emp["Salario_Base"] + resumen_emp["Costo_Recargos"]
+        st.table(resumen_emp.style.format("${:,.0f}"))
+
+    with t3:
+        c1, c2, c3 = st.columns(3)
+        total_recargos = df_res['Costo_Recargos'].sum()
+        c1.metric("Gasto en Recargos/Extras", f"${total_recargos:,.0f}")
+        c2.metric("Total Horas Extra", f"{df_res['H_Extra'].sum():.1f} h")
+        c3.metric("Jornada Legal", "7h 20min")
         
-        # Valor de la hora
-        v_hora = row['salario'] / VALOR_HORA_FACTOR
-        
-        # Costos
-        costo_extra = h_extra * v_hora * (1 + r_extra)
-        costo_recargo_noc = h_nocturnas * v_hora * r_nocturno
-        
-        costo_dom = 0
-        if row['nombre_dia'] == "Dom":
-            costo_dom = h_fisicas * v_hora * r_dominical
-            
-        total_recargos = costo_extra + costo_recargo_noc + costo_dom
-        return pd.Series([h_extra, h_nocturnas, total_recargos, v_hora])
-
-    # Aplicamos a la malla generada
-    # (Nota: Esto asume que df_final ya existe tras la optimización)
-    # df_final[['H_Extra', 'H_Nocturna', 'Costo_Recargos', 'V_Hora']] = df_final.apply(calcular_detalles_legales, axis=1)
-    
-    st.success("Malla generada con éxito")
-
-# --- 8. VISUALIZACIÓN ---
-t1, t2, t3 = st.tabs(["📅 Malla Operativa", "📊 Análisis de Rotación", "💰 Auditoría Salarial"])
-
-with t3:
-    st.header("Auditoría de Costos Proyectados")
-    st.info(f"Basado en Jornada de {JORNADA_DIARIA_LEGAL}h y Recargo Nocturno desde las 19:00")
-    
-    # Ejemplo de tabla de resumen
-    col_a, col_b, col_c = st.columns(3)
-    col_a.metric("Total Horas Extra", "124h", "+15% vs 2025")
-    col_b.metric("Costo Proyectado Recargos", "$1.250.000")
-    col_c.metric("Equidad de Noches", "98%", "Óptima")
-
-    st.markdown("""
-    ### 📝 Desglose por Empleado
-    | Empleado | Cargo | Horas Extra | Horas Nocturnas | Sobrecosto Reforma | Estado |
-    | :--- | :--- | :--- | :--- | :--- | :--- |
-    | Juan Perez | Tecnico A | 18.2h | 40h | $245.000 | ✅ Cumple |
-    | Maria Lopez | Tecnico A | 17.5h | 32h | $210.000 | ✅ Cumple |
-    """)
-
-with t2:
-    st.header("Análisis de Equidad y Rotación")
-    # Aquí puedes insertar gráficos de barras de st.bar_chart()
-    # comparando cuántas noches hizo cada persona para asegurar que sea justo.
+        st.bar_chart(df_res.groupby("Empleado")["Costo_Recargos"].sum())
