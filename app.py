@@ -41,10 +41,6 @@ def login_page():
                         st.session_state['auth'] = True; st.session_state['user_name'] = "Richard Guevara"; st.rerun()
                     else: st.error("Credenciales Incorrectas")
             st.markdown("</div>", unsafe_allow_html=True)
-            st.markdown("<div class='logo-footer-container'>", unsafe_allow_html=True)
-            for lp in ["logo_empresa_1.png", "logo_empresa_3.png", "logo_empresa_2.png"]:
-                if os.path.exists(lp): st.image(lp, width=130)
-            st.markdown("</div>", unsafe_allow_html=True)
         st.stop()
 
 login_page()
@@ -57,7 +53,7 @@ def load_data():
         df.columns = df.columns.str.strip().str.lower()
         c_nom = next((c for c in df.columns if 'nom' in c or 'emp' in c), "nombre")
         c_car = next((c for c in df.columns if 'car' in c), "cargo")
-        c_des = next((c for c in df.columns if 'des' in c), "descanso") # CAMBIO A COLUMNA DESCANSO
+        c_des = next((c for c in df.columns if 'des' in c), "descanso")
         return df.rename(columns={c_nom: 'nombre', c_car: 'cargo', c_des: 'descanso_ley'})
     except: return None
 
@@ -80,22 +76,27 @@ if df_raw is not None:
         prob = LpProblem("MovilGo_Final", LpMaximize)
         asig = LpVariable.dicts("Asig", (df_f['nombre'], range(1, num_dias + 1), LISTA_TURNOS), cat='Binary')
         
+        # Función Objetivo: Maximizar asignación
         prob += lpSum([asig[e][d][t] for e in df_f['nombre'] for d in range(1, num_dias + 1) for t in LISTA_TURNOS])
 
+        # Restricción: Cupo por turno
         for di in dias_info:
             for t in LISTA_TURNOS:
                 prob += lpSum([asig[e][di["n"]][t] for e in df_f['nombre']]) <= cupo_manual
 
         for _, row in df_f.iterrows():
             e = row['nombre']
-            # LEER DIRECTAMENTE DE LA COLUMNA DESCANSO
             dia_ley = "Sab" if "sab" in str(row['descanso_ley']).lower() else "Dom"
             
             for d in range(1, num_dias + 1):
+                # Un solo turno al día
                 prob += lpSum([asig[e][d][t] for t in LISTA_TURNOS]) <= 1
-                if d < num_dias: # Higiene sueño
-                    prob += asig[e][d]["Noche"] + asig[e][d+1]["AM"] <= 1
-                    prob += asig[e][d]["Noche"] + asig[e][d+1]["PM"] <= 1
+                
+                # --- AJUSTE DE HIGIENE DE SUEÑO ---
+                if d < num_dias:
+                    # Si trabaja NOCHE en d, NO puede trabajar ningún turno en d+1 (Obligatorio Descanso)
+                    prob += asig[e][d]["Noche"] + lpSum([asig[e][d+1][t] for t in LISTA_TURNOS]) <= 1
+                    # Evitar cambio brusco de PM a AM
                     prob += asig[e][d]["PM"] + asig[e][d+1]["AM"] <= 1
             
             # GARANTÍA DE LEY: Máximo 2 trabajados de su día de descanso al mes
@@ -120,37 +121,43 @@ if df_raw is not None:
                 grupo = grupo.sort_values("Dia").copy()
                 dia_ley_nom = "Sab" if "sab" in str(grupo['Ley_Descanso'].iloc[0]).lower() else "Dom"
                 
-                # 1. Marcar descansos fijos (los que no trabajó)
+                # 1. Marcar descansos fijos de ley
                 idx_fijos = grupo[(grupo['Turno'] == '---') & (grupo['Nom_Dia'] == dia_ley_nom)].head(2).index
                 grupo.loc[idx_fijos, 'Turno'] = 'DESC. LEY'
                 
-                # 2. Compensatorios obligatorios L-V si trabajó su día de ley
+                # 2. Compensatorios L-V por trabajar día de ley
                 findes_trab = grupo[(grupo['Nom_Dia'] == dia_ley_nom) & (grupo['Turno'].isin(LISTA_TURNOS))]
                 for _, row_f in findes_trab.iterrows():
-                    # Buscar el primer día libre (---) en los 7 días siguientes L-V
                     hueco = grupo[(grupo['Dia'] > row_f['Dia']) & (grupo['Dia'] <= row_f['Dia'] + 7) & (grupo['Turno'] == '---') & (~grupo['Nom_Dia'].isin(['Sab', 'Dom']))].head(1)
                     if not hueco.empty:
                         grupo.loc[hueco.index, 'Turno'] = 'DESC. COMPENSATORIO'
+
+                # 3. Marcar Post-Noche (Visualización)
+                for i in range(len(grupo) - 1):
+                    if grupo.iloc[i]['Turno'] == 'Noche' and grupo.iloc[i+1]['Turno'] == '---':
+                        grupo.iloc[i+1, grupo.columns.get_loc('Turno')] = 'DESC. POST-NOCHE'
                 
-                # 3. Disponibilidad
+                # 4. Disponibilidad
                 grupo.loc[grupo['Turno'] == '---', 'Turno'] = 'DISPONIBILIDAD'
                 lista_final.append(grupo)
             
             st.session_state['df_final'] = pd.concat(lista_final).reset_index(drop=True)
-            st.success("✅ Malla Generada respetando columna 'Descanso'")
+            st.success("✅ Malla Generada con Higiene de Sueño (Post-Noche Bloqueado)")
 
     if 'df_final' in st.session_state:
         df_v = st.session_state['df_final']
         def style_map(v):
             if v == 'DESC. LEY': return 'background-color: #ffb3b3; color: #b30000; font-weight: bold'
             if v == 'DESC. COMPENSATORIO': return 'background-color: #ffd9b3; color: #804000; font-weight: bold'
+            if v == 'DESC. POST-NOCHE': return 'background-color: #d1fae5; color: #065f46; font-weight: bold'
             if v == 'DISPONIBILIDAD': return 'background-color: #e6f3ff; color: #004080'
+            if v == 'Noche': return 'background-color: #1e293b; color: white; font-weight: bold'
             return ''
 
         t1, t2, t3 = st.tabs(["📅 Malla Operativa", "🔍 Filtro Empleado", "⚖️ Auditoría Legal"])
         with t1:
             m_f = df_v.pivot(index='Empleado', columns='Label', values='Turno')
-            st.dataframe(m_f[sorted(m_f.columns, key=lambda x: int(x.split(' - ')[0]))].style.map(style_map), use_container_width=True)
+            st.dataframe(m_f[sorted(m_f.columns, key=lambda x: int(x.split(' - ')[0]))].style.applymap(style_map), use_container_width=True)
         with t3:
             audit = []
             for e, g in df_v.groupby("Empleado"):
