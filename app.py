@@ -1,129 +1,193 @@
-# ==============================
-# BACKEND - FASTAPI + OPTIMIZADOR
-# ==============================
-
-from fastapi import FastAPI
-from pydantic import BaseModel
+import streamlit as st
 import pandas as pd
 from pulp import *
 import calendar
 from datetime import datetime
 
-app = FastAPI()
-
+# --- CONFIG ---
+st.set_page_config(page_title="MovilGo Pro", layout="wide")
 TURNOS = ["AM", "PM", "Noche"]
 
-class InputData(BaseModel):
-    empleados: list
-    demanda: dict
-    mes: int
-    anio: int
+# --- CARGA ---
+@st.cache_data
+def load_data():
+    df = pd.read_excel("empleados.xlsx")
+    df.columns = df.columns.str.strip().str.lower()
+    return df.rename(columns={'nombre':'nombre','cargo':'cargo','descanso':'descanso_ley'})
 
-@app.post("/generar_malla")
-def generar_malla(data: InputData):
+df_raw = load_data()
 
-    empleados = data.empleados
-    demanda = data.demanda
-    mes = data.mes
-    anio = data.anio
+# --- SIDEBAR ---
+meses = ["Enero","Febrero","Marzo","Abril","Mayo","Junio",
+         "Julio","Agosto","Septiembre","Octubre","Noviembre","Diciembre"]
 
-    num_dias = calendar.monthrange(anio, mes)[1]
+mes_sel = st.sidebar.selectbox("Mes", meses)
+mes_num = meses.index(mes_sel) + 1
+cargo_sel = st.sidebar.selectbox("Cargo", sorted(df_raw['cargo'].unique()))
+cupo = st.sidebar.number_input("Cupo por turno", 1, 20, 2)
 
-    dias_info = [{
-        "n": d,
-        "nombre": ["Lun","Mar","Mie","Jue","Vie","Sab","Dom"][datetime(anio, mes, d).weekday()]
-    } for d in range(1, num_dias+1)]
+num_dias = calendar.monthrange(2026, mes_num)[1]
 
-    prob = LpProblem("Turnos", LpMaximize)
+dias_info = [{
+    "n": d,
+    "nombre": ["Lun","Mar","Mie","Jue","Vie","Sab","Dom"][datetime(2026, mes_num, d).weekday()],
+    "semana": (d + datetime(2026, mes_num, 1).weekday() - 1)//7 + 1,
+    "label": f"{d}-{['Lun','Mar','Mie','Jue','Vie','Sab','Dom'][datetime(2026, mes_num, d).weekday()]}"
+} for d in range(1, num_dias+1)]
 
-    asig = LpVariable.dicts("A", (range(len(empleados)), range(1, num_dias+1), TURNOS), cat='Binary')
+# --- BOTÓN ---
+if st.button("🚀 GENERAR MALLA"):
+
+    df_f = df_raw[df_raw['cargo'] == cargo_sel].copy()
+    empleados = df_f['nombre'].tolist()
+
+    prob = LpProblem("Malla", LpMaximize)
+
+    asig = LpVariable.dicts("A", (empleados, range(1, num_dias+1), TURNOS), cat='Binary')
+    noches = LpVariable.dicts("N", empleados, lowBound=0)
 
     # OBJETIVO
-    prob += lpSum(asig[e][d][t] for e in range(len(empleados)) for d in range(1, num_dias+1) for t in TURNOS)
+    prob += lpSum(asig[e][d][t] for e in empleados for d in range(1, num_dias+1) for t in TURNOS) \
+            - 2 * lpSum(noches[e] for e in empleados)
 
     # COBERTURA
     for d in range(1, num_dias+1):
         for t in TURNOS:
-            prob += lpSum(asig[e][d][t] for e in range(len(empleados))) >= demanda[t]["min"]
-            prob += lpSum(asig[e][d][t] for e in range(len(empleados))) <= demanda[t]["max"]
+            prob += lpSum(asig[e][d][t] for e in empleados) <= cupo
 
     # RESTRICCIONES
-    for e in range(len(empleados)):
+    for _, row in df_f.iterrows():
+        e = row['nombre']
+        dia_ley = "Sab" if "sab" in str(row['descanso_ley']).lower() else "Dom"
+
         for d in range(1, num_dias+1):
             prob += lpSum(asig[e][d][t] for t in TURNOS) <= 1
 
             if d < num_dias:
-                prob += asig[e][d]["Noche"] + asig[e][d+1]["AM"] <= 1
+                # descanso real
+                prob += asig[e][d]["Noche"] + lpSum(asig[e][d+1][t] for t in TURNOS) <= 1
                 prob += asig[e][d]["PM"] + asig[e][d+1]["AM"] <= 1
-                prob += asig[e][d]["Noche"] + asig[e][d+1]["PM"] <= 1
 
-    prob.solve()
+        # evitar exceso noches
+        for d in range(1, num_dias-1):
+            prob += asig[e][d]["Noche"] + asig[e][d+1]["Noche"] + asig[e][d+2]["Noche"] <= 2
 
-    resultado = []
-    for e in range(len(empleados)):
-        for d in range(1, num_dias+1):
-            turno = "DESCANSO"
+        dias_ley = [di["n"] for di in dias_info if di["nombre"] == dia_ley]
+
+        # mínimo 2 descansos fin de semana
+        prob += lpSum(asig[e][d][t] for d in dias_ley for t in TURNOS) <= (len(dias_ley) - 2)
+
+        # carga mínima mensual
+        prob += lpSum(asig[e][d][t] for d in range(1, num_dias+1) for t in TURNOS) >= 18
+
+        prob += noches[e] == lpSum(asig[e][d]["Noche"] for d in range(1, num_dias+1))
+
+    prob.solve(PULP_CBC_CMD(msg=0))
+
+    if LpStatus[prob.status] != 'Optimal':
+        st.error("❌ No se pudo generar solución (revisa cupos vs personal)")
+        st.stop()
+
+    # --- RESULTADO ---
+    res = []
+    for di in dias_info:
+        for e in empleados:
+            turno = "---"
             for t in TURNOS:
-                if value(asig[e][d][t]) == 1:
+                if value(asig[e][di["n"]][t]) == 1:
                     turno = t
-            resultado.append({
-                "empleado": empleados[e],
-                "dia": d,
-                "turno": turno
+
+            res.append({
+                "Dia": di["n"],
+                "Label": di["label"],
+                "Semana": di["semana"],
+                "Nom_Dia": di["nombre"],
+                "Empleado": e,
+                "Turno": turno,
+                "Ley": df_f[df_f['nombre']==e]['descanso_ley'].values[0]
             })
 
-    return resultado
+    df_res = pd.DataFrame(res)
 
+    # --- POST PROCESO ---
+    final = []
 
-# ==============================
-# FRONTEND - STREAMLIT PRO
-# ==============================
+    for emp, g in df_res.groupby("Empleado"):
+        g = g.sort_values("Dia").copy()
+        dia_ley = "Sab" if "sab" in str(g['Ley'].iloc[0]).lower() else "Dom"
 
-import streamlit as st
-import requests
-import pandas as pd
+        # DESCANSOS DE LEY (mínimo 2)
+        idx = g[(g['Turno']=="---") & (g['Nom_Dia']==dia_ley)].head(2).index
+        g.loc[idx,"Turno"] = "DESC. LEY"
 
-st.set_page_config(layout="wide")
+        # COMPENSATORIOS OBLIGATORIOS
+        findes = g[(g['Nom_Dia']==dia_ley) & (g['Turno'].isin(TURNOS))]
 
-st.title("⚡ MovilGo Enterprise Scheduler")
+        for _, r in findes.iterrows():
 
-st.sidebar.header("Configuración")
-mes = st.sidebar.selectbox("Mes", list(range(1,13)))
-anio = st.sidebar.number_input("Año", value=2026)
+            hueco = g[
+                (g['Semana']==r['Semana']+1) &
+                (g['Turno']=="---") &
+                (~g['Nom_Dia'].isin(['Sab','Dom']))
+            ].head(1)
 
-st.sidebar.subheader("Demanda por turno")
-demanda = {
-    "AM": {"min": st.sidebar.number_input("AM min",1,10,2), "max": st.sidebar.number_input("AM max",1,10,3)},
-    "PM": {"min": st.sidebar.number_input("PM min",1,10,2), "max": st.sidebar.number_input("PM max",1,10,3)},
-    "Noche": {"min": st.sidebar.number_input("Noche min",1,10,1), "max": st.sidebar.number_input("Noche max",1,10,2)}
-}
+            if not hueco.empty:
+                g.loc[hueco.index,"Turno"] = "DESC. COMPENSATORIO"
+            else:
+                for idx2 in g[
+                    (g['Semana']==r['Semana']+1) &
+                    (~g['Nom_Dia'].isin(['Sab','Dom']))
+                ].index:
+                    g.loc[idx2,"Turno"] = "DESC. COMPENSATORIO"
+                    break
 
-empleados = st.text_area("Empleados (uno por línea)").split("\n")
+        # DISPONIBILIDAD INTELIGENTE
+        for idx in g[g['Turno']=="---"].index:
+            dia = g.loc[idx,"Dia"]
+            prev = g[(g['Dia']<dia) & (g['Turno'].isin(TURNOS))].tail(1)
 
-if st.button("Generar Malla"):
-    payload = {
-        "empleados": empleados,
-        "demanda": demanda,
-        "mes": mes,
-        "anio": anio
-    }
+            if not prev.empty:
+                g.loc[idx,"Turno"] = f"DISPONIBLE {prev['Turno'].values[0]}"
+            else:
+                g.loc[idx,"Turno"] = "DISPONIBLE AM"
 
-    res = requests.post("http://localhost:8000/generar_malla", json=payload)
-    data = res.json()
+        final.append(g)
 
-    df = pd.DataFrame(data)
-    st.dataframe(df)
+    df_final = pd.concat(final)
 
+    # --- KPIs ---
+    kpis = []
+    for e, g in df_final.groupby("Empleado"):
+        dia_ley = "Sab" if "sab" in str(g['Ley'].iloc[0]).lower() else "Dom"
 
-# ==============================
-# INSTRUCCIONES
-# ==============================
+        kpis.append({
+            "Empleado": e,
+            "Turnos": len(g[g['Turno'].isin(TURNOS)]),
+            "Noches": len(g[g['Turno']=="Noche"]),
+            "Compensatorios": len(g[g['Turno']=="DESC. COMPENSATORIO"]),
+            "Desc. Ley": len(g[(g['Nom_Dia']==dia_ley) & (g['Turno']=="DESC. LEY")]),
+            "Carga %": round(len(g[g['Turno'].isin(TURNOS)]) / num_dias * 100,1)
+        })
 
-# 1. Ejecutar backend:
-# uvicorn main:app --reload
+    df_kpi = pd.DataFrame(kpis)
 
-# 2. Ejecutar frontend:
-# streamlit run app.py
+    # --- UI ---
+    st.success("✅ Malla generada correctamente")
 
-# 3. Abrir navegador:
-# http://localhost:8501
+    tab1, tab2 = st.tabs(["📅 Malla", "📊 KPIs"])
+
+    with tab1:
+        st.dataframe(df_final.pivot(index="Empleado", columns="Label", values="Turno"),
+                     use_container_width=True)
+
+    with tab2:
+        st.dataframe(df_kpi, use_container_width=True)
+
+    # --- EXPORTAR ---
+    if st.button("📥 Exportar Excel"):
+        with pd.ExcelWriter("malla_final.xlsx") as writer:
+            df_final.to_excel(writer, sheet_name="Malla")
+            df_kpi.to_excel(writer, sheet_name="KPIs")
+
+        with open("malla_final.xlsx","rb") as f:
+            st.download_button("Descargar archivo", f, "malla_final.xlsx")
