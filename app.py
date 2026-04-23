@@ -4,9 +4,10 @@ from pulp import *
 import calendar
 from datetime import datetime
 
-# --- 1. CONFIGURACIÓN ---
-st.set_page_config(page_title="MovilGo Pro - Respaldo Dinámico", layout="wide", page_icon="🛡️")
-LISTA_TURNOS = ["T1", "T2", "T3"]
+# --- 1. CONFIGURACIÓN Y NOMENCLATURA ---
+st.set_page_config(page_title="MovilGo Pro - Control T1/T2/T3", layout="wide", page_icon="⚙️")
+# Nomenclatura solicitada
+LISTA_TURNOS = ["T1", "T2", "T3"] 
 
 # --- 2. LOGIN ---
 if 'auth' not in st.session_state: st.session_state['auth'] = False
@@ -37,7 +38,7 @@ df_raw = load_base()
 
 if df_raw is not None:
     with st.sidebar:
-        st.header("⚙️ Parámetros")
+        st.header("⚙️ Configuración Operativa")
         m_req = st.number_input("Masters", 1, 5, 2)
         ta_req = st.number_input("Técnicos A", 1, 15, 7)
         tb_req = st.number_input("Técnicos B", 1, 10, 3)
@@ -62,15 +63,14 @@ if df_raw is not None:
 
     df_celulas, total_g = armar_celulas(df_raw, m_req, ta_req, tb_req)
 
-    st.title(f"📊 Gestión de Turnos y Respaldo: {mes_sel}")
+    st.title(f"📊 Control de Turnos T1-T2-T3: {mes_sel}")
     
-    opciones_descanso = ["Lunes", "Viernes", "Sabado", "Domingo"]
     dict_descansos = {}
     nombres_grupos = df_celulas['grupo'].unique()
     cols = st.columns(max(total_g, 1))
     for i, g_name in enumerate(nombres_grupos):
         with cols[i]:
-            dict_descansos[g_name] = st.selectbox(f"Ley {g_name}", opciones_descanso, index=i % len(opciones_descanso))
+            dict_descansos[g_name] = st.selectbox(f"Ley {g_name}", ["Lunes", "Viernes", "Sabado", "Domingo"], index=i % 4)
 
     num_dias = calendar.monthrange(ano_sel, mes_num)[1]
     dias_range = range(1, num_dias + 1)
@@ -78,40 +78,36 @@ if df_raw is not None:
     dias_info = [{"n": d, "nombre": dias_es[datetime(ano_sel, mes_num, d).weekday()], "semana": datetime(ano_sel, mes_num, d).isocalendar()[1], "label": f"{d}-{dias_es[datetime(ano_sel, mes_num, d).weekday()]}"} for d in dias_range]
     semanas_mes = sorted(list(set([d["semana"] for d in dias_info])))
 
-    if st.button("⚡ GENERAR MALLA CON RESPALDO AUTOMÁTICO"):
-        with st.status("Asignando grupos disponibles a turnos faltantes...", expanded=True) as status:
-            prob = LpProblem("MovilGo_Respaldo", LpMaximize)
+    if st.button("⚡ GENERAR MALLA T1-T2-T3"):
+        with st.status("Asignando turnos y configurando respaldos...", expanded=True) as status:
+            prob = LpProblem("MovilGo_T_Codes", LpMaximize)
             asig_sem = LpVariable.dicts("AsigSem", (nombres_grupos, semanas_mes, LISTA_TURNOS), cat='Binary')
             
-            # Prioridad máxima a la cobertura de los 3 turnos base
+            # Objetivo: Cobertura máxima
             prob += lpSum([asig_sem[g][s][t] for g in nombres_grupos for s in semanas_mes for t in LISTA_TURNOS])
 
             for s in semanas_mes:
                 for t in LISTA_TURNOS:
-                    # Garantizar que siempre haya al menos 1 grupo (pueden ser más si hay disponibles)
+                    # Garantizar al menos 1 grupo por turno (T1, T2, T3)
                     prob += lpSum([asig_sem[g][s][t] for g in nombres_grupos]) >= 1
-                
                 for g in nombres_grupos:
-                    # Un grupo solo un turno por semana
                     prob += lpSum([asig_sem[g][s][t] for t in LISTA_TURNOS]) <= 1
 
-            # Rotación Noche -> PM -> AM
+            # Rotación: T3 (Noche) -> T2 (PM) -> T1 (AM)
             for g in nombres_grupos:
                 for i in range(len(semanas_mes)-1):
                     s_a = semanas_mes[i]; s_s = semanas_mes[i+1]
-                    prob += asig_sem[g][s_a]["Noche"] <= asig_sem[g][s_s]["PM"]
-                    prob += asig_sem[g][s_a]["PM"] <= asig_sem[g][s_s]["AM"]
+                    prob += asig_sem[g][s_a]["T3"] <= asig_sem[g][s_s]["T2"]
+                    prob += asig_sem[g][s_a]["T2"] <= asig_sem[g][s_s]["T1"]
 
             prob.solve(PULP_CBC_CMD(msg=0))
 
-            # Procesamiento de resultados
             res_list = []
             for d_i in dias_info:
                 for g in nombres_grupos:
                     t_sem = "DISPONIBILIDAD"
                     for t in LISTA_TURNOS:
-                        if value(asig_sem[g][d_i["semana"]][t]) == 1:
-                            t_sem = t
+                        if value(asig_sem[g][d_i["semana"]][t]) == 1: t_sem = t
                     
                     es_ley = (d_i["nombre"] == dict_descansos[g][:3])
                     miembros = df_celulas[df_celulas['grupo'] == g]
@@ -131,42 +127,36 @@ if df_raw is not None:
                     t_s = f_sem['Turno_Base'].iloc[0]
                     g_emp.loc[f_sem.index, 'Resultado'] = t_s
                     idx_l = f_sem[f_sem['Es_Ley']].index
-                    if not idx_l.empty:
-                        g_emp.loc[idx_l, 'Resultado'] = "DESC. LEY"
+                    if not idx_l.empty: g_emp.loc[idx_l, 'Resultado'] = "DESC. LEY"
                 f_rows.append(g_emp)
 
             st.session_state['malla_final'] = pd.concat(f_rows)
-            status.update(label="✅ Malla generada con lógica de respaldo activa.", state="complete")
+            status.update(label="✅ Malla T1-T2-T3 generada.", state="complete")
 
-    # --- 4. MÓDULOS DE AUDITORÍA ACTUALIZADOS ---
     if 'malla_final' in st.session_state:
-        tab1, tab2, tab3 = st.tabs(["📅 Malla Operativa", "🛡️ Control de Respaldo", "⚖️ Auditoría Personal"])
+        tab1, tab2, tab3 = st.tabs(["📅 Malla Operativa", "🛡️ Auditoría de Cupos", "📊 Resumen Grupal"])
 
         with tab1:
             piv = st.session_state['malla_final'].pivot(index=['Grupo', 'Empleado'], columns='Label', values='Resultado')
             cols = sorted(piv.columns, key=lambda x: int(x.split('-')[0]))
             def styler(v):
                 if 'LEY' in str(v): return 'background-color: #fee2e2; color: #991b1b; font-weight: bold'
-                if v == 'Noche': return 'background-color: #1e293b; color: white'
-                if v == 'AM': return 'background-color: #dcfce7; color: #166534'
-                if v == 'PM': return 'background-color: #e0f2fe; color: #0369a1'
-                return 'color: #94a3b8; font-style: italic'
+                if v == 'T3': return 'background-color: #1e293b; color: white' # Noche
+                if v == 'T1': return 'background-color: #dcfce7; color: #166534' # AM
+                if v == 'T2': return 'background-color: #e0f2fe; color: #0369a1' # PM
+                return 'color: #94a3b8'
             st.dataframe(piv[cols].style.map(styler), use_container_width=True)
 
         with tab2:
-            st.subheader("Estado de Cobertura por Turno")
-            # Contamos cuántos grupos hay por turno cada día
+            st.subheader("Validación de Cobertura Diaria")
             cobertura = st.session_state['malla_final'][~st.session_state['malla_final']['Resultado'].str.contains('DESC')].groupby(['Label', 'Resultado'])['Grupo'].nunique().unstack().fillna(0)
-            st.write("Si un turno tiene más de 1 grupo, significa que un 'Disponible' fue asignado como respaldo.")
             st.dataframe(cobertura, use_container_width=True)
 
         with tab3:
-            # (Mismo módulo de auditoría de descansos anterior)
             audit = []
             for (grupo, emp), data in st.session_state['malla_final'].groupby(['Grupo', 'Empleado']):
-                descansos = len(data[data['Resultado'].str.contains('DESC')])
                 audit.append({
-                    "Grupo": grupo, "Empleado": emp, "Día Ley": data['Contrato'].iloc[0],
-                    "Descansos Mes": descansos, "Cumplimiento": "✅ OK" if descansos >= len(semanas_mes) else "⚠️ REVISAR"
+                    "Grupo": grupo, "Empleado": emp, "Turnos": " -> ".join(data.groupby('Semana')['Turno_Base'].first().tolist()),
+                    "Descansos": len(data[data['Resultado'].str.contains('DESC')])
                 })
             st.table(pd.DataFrame(audit))
