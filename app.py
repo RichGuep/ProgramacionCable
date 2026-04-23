@@ -4,9 +4,15 @@ from pulp import *
 import calendar
 from datetime import datetime
 
-# --- 1. CONFIGURACIÓN ---
-st.set_page_config(page_title="MovilGo Pro - Visual por Grupos", layout="wide", page_icon="🎨")
+# --- 1. CONFIGURACIÓN Y ESTILOS ---
+st.set_page_config(page_title="MovilGo Pro - Malla Organizada", layout="wide", page_icon="📅")
 LISTA_TURNOS = ["T1", "T2", "T3"] 
+
+st.markdown("""
+    <style>
+    .stDataFrame { border: 1px solid #e6e9ef; border-radius: 10px; }
+    </style>
+    """, unsafe_allow_html=True)
 
 # --- 2. LOGIN ---
 if 'auth' not in st.session_state: st.session_state['auth'] = False
@@ -38,7 +44,7 @@ df_raw = load_base()
 if df_raw is not None:
     with st.sidebar:
         st.header("⚙️ Configuración")
-        m_req = st.number_input("Masters", 1, 5, 2)
+        m_req = st.number_input("Masters por Célula", 1, 5, 2)
         ta_req = st.number_input("Técnicos A", 1, 15, 7)
         tb_req = st.number_input("Técnicos B", 1, 10, 3)
         st.divider()
@@ -47,17 +53,15 @@ if df_raw is not None:
         ano_sel = st.selectbox("Año", [2025, 2026], index=1)
         mes_num = meses.index(mes_sel) + 1
 
-    def obtener_cantidad_grupos(df, m, ta, tb):
-        mas = len(df[df['cargo'].str.contains('Master', case=False, na=False)])
-        tca = len(df[df['cargo'].str.contains('Tecnico A', case=False, na=False)])
-        tcb = len(df[df['cargo'].str.contains('Tecnico B', case=False, na=False)])
-        return min(mas//m if m>0 else 99, tca//ta if ta>0 else 99, tcb//tb if tb>0 else 99)
+    # Detección de grupos
+    num_mas = len(df_raw[df_raw['cargo'].str.contains('Master', case=False)])
+    num_tca = len(df_raw[df_raw['cargo'].str.contains('Tecnico A', case=False)])
+    num_tcb = len(df_raw[df_raw['cargo'].str.contains('Tecnico B', case=False)])
+    num_g = min(num_mas//m_req if m_req>0 else 99, num_tca//ta_req if ta_req>0 else 99, num_tcb//tb_req if tb_req>0 else 99)
 
-    num_g = obtener_cantidad_grupos(df_raw, m_req, ta_req, tb_req)
-
-    st.title(f"🎨 Programación por Células: {mes_sel}")
+    st.title(f"🚀 Malla Operativa: {mes_sel} {ano_sel}")
     
-    with st.expander("🏷️ Personalización de Grupos", expanded=True):
+    with st.expander("🏷️ Nombres y Descansos de Grupos", expanded=True):
         n_map, d_map = {}, {}
         cols = st.columns(num_g if num_g > 0 else 1)
         for i in range(num_g):
@@ -81,26 +85,38 @@ if df_raw is not None:
     df_celulas = pd.DataFrame(c_list)
     g_finales = list(n_map.values())
 
-    # Motor de Optimización (Lógica T3 Bloqueo + Ciclo)
+    # --- MOTOR CRONOLÓGICO ---
     num_dias = calendar.monthrange(ano_sel, mes_num)[1]
-    d_info = [{"n": d, "nom": ["Lun", "Mar", "Mie", "Jue", "Vie", "Sab", "Dom"][datetime(ano_sel, mes_num, d).weekday()], "sem": datetime(ano_sel, mes_num, d).isocalendar()[1], "lab": f"{d}-{['Lun', 'Mar', 'Mie', 'Jue', 'Vie', 'Sab', 'Dom'][datetime(ano_sel, mes_num, d).weekday()]}"} for d in range(1, num_dias + 1)]
+    d_info = []
+    for d in range(1, num_dias + 1):
+        dt = datetime(ano_sel, mes_num, d)
+        d_info.append({
+            "n": d, 
+            "nom": ["Lun", "Mar", "Mie", "Jue", "Vie", "Sab", "Dom"][dt.weekday()], 
+            "sem": dt.isocalendar()[1], 
+            "label": f"{d:02d}-{['Lun', 'Mar', 'Mie', 'Jue', 'Vie', 'Sab', 'Dom'][dt.weekday()]}" # 02d para orden correcto
+        })
     semanas = sorted(list(set([d["sem"] for d in d_info])))
 
-    if st.button("⚡ GENERAR MALLA COLORIZADA"):
-        prob = LpProblem("MovilGo_Color", LpMaximize)
+    if st.button("⚡ GENERAR MALLA ORGANIZADA"):
+        prob = LpProblem("MovilGo_Final", LpMaximize)
         asig = LpVariable.dicts("Asig", (g_finales, semanas, LISTA_TURNOS), cat='Binary')
         prob += lpSum([asig[g][s][t] for g in g_finales for s in semanas for t in LISTA_TURNOS])
+        
         for s in semanas:
             for t in LISTA_TURNOS: prob += lpSum([asig[g][s][t] for g in g_finales]) >= 1
             for g in g_finales: prob += lpSum([asig[g][s][t] for t in LISTA_TURNOS]) <= 1
+        
         for g in g_finales:
             for i in range(len(semanas)-1):
                 s1, s2 = semanas[i], semanas[i+1]
-                prob += asig[g][s1]["T3"] + asig[g][s2]["T1"] <= 1 # Bloqueo fatiga
+                prob += asig[g][s1]["T3"] + asig[g][s2]["T1"] <= 1 # Anti-Fatiga
                 prob += asig[g][s1]["T3"] <= asig[g][s2]["T2"]
                 prob += asig[g][s1]["T2"] <= asig[g][s2]["T1"]
+        
         prob.solve(PULP_CBC_CMD(msg=0))
 
+        # Procesamiento
         res_map = {}
         for s in semanas:
             for t in LISTA_TURNOS:
@@ -116,7 +132,7 @@ if df_raw is not None:
                 t_f = res_map.get((g, d_i["sem"]), "DISPONIBLE")
                 es_l = (d_i["nom"] == d_map[g][:3])
                 for _, m in df_celulas[df_celulas['grupo'] == g].iterrows():
-                    final_rows.append({"Dia": d_i["n"], "Label": d_i["lab"], "Nom_Dia": d_i["nom"], "Semana": d_i["sem"], "Empleado": m['nombre'], "Cargo": m['cargo'], "Grupo": g, "Turno": t_f, "Ley": es_l})
+                    final_rows.append({"Dia": d_i["n"], "Label": d_i["label"], "Nom_Dia": d_i["nom"], "Semana": d_i["sem"], "Empleado": m['nombre'], "Cargo": m['cargo'], "Grupo": g, "Turno": t_f, "Ley": es_l})
 
         df_res = pd.DataFrame(final_rows)
         p_rows = []
@@ -136,41 +152,28 @@ if df_raw is not None:
                     idx_l = f_s[f_s['Ley']].index
                     if not idx_l.empty: g_emp.loc[idx_l, 'Final'] = "DESC. LEY"
             p_rows.append(g_emp)
-
+        
         st.session_state['malla_final'] = pd.concat(p_rows)
 
     if 'malla_final' in st.session_state:
         df_f = st.session_state['malla_final']
         piv = df_f.pivot(index=['Grupo', 'Empleado', 'Cargo'], columns='Label', values='Final')
         
-        # --- LÓGICA DE COLORES POR GRUPO ---
+        # --- ORDENAR COLUMNAS CRONOLÓGICAMENTE ---
+        cols_ordenadas = sorted(piv.columns, key=lambda x: int(x.split('-')[0]))
+        piv = piv[cols_ordenadas]
+
         def aplicar_estilos(row):
-            # Colores base para cada grupo
-            colores_grupos = {
-                g_finales[0]: "#E3F2FD", # Azul muy claro
-                g_finales[1] if len(g_finales)>1 else "": "#F1F8E9", # Verde muy claro
-                g_finales[2] if len(g_finales)>2 else "": "#FFF3E0", # Naranja muy claro
-                g_finales[3] if len(g_finales)>3 else "": "#F3E5F5", # Morado muy claro
-            }
-            texto_grupos = {
-                g_finales[0]: "#1565C0", 
-                g_finales[1] if len(g_finales)>1 else "": "#2E7D32", 
-                g_finales[2] if len(g_finales)>2 else "": "#EF6C00",
-                g_finales[3] if len(g_finales)>3 else "": "#7B1FA2",
-            }
-            
-            grupo_actual = row.name[0]
+            colores_grupos = {g_finales[0]: "#E3F2FD", g_finales[1] if len(g_finales)>1 else "None": "#F1F8E9", g_finales[2] if len(g_finales)>2 else "None": "#FFF3E0", g_finales[3] if len(g_finales)>3 else "None": "#F3E5F5"}
+            texto_grupos = {g_finales[0]: "#1565C0", g_finales[1] if len(g_finales)>1 else "None": "#2E7D32", g_finales[2] if len(g_finales)>2 else "None": "#EF6C00", g_finales[3] if len(g_finales)>3 else "None": "#7B1FA2"}
+            g_actual = row.name[0]
             estilos = []
             for val in row:
-                if 'DESC' in str(val):
-                    estilos.append('background-color: #EF5350; color: white; font-weight: bold; border: 1px solid white') # Rojo Descanso
-                elif 'DISPO' in str(val) and val != 'DISPONIBLE':
-                    estilos.append(f'background-color: {colores_grupos.get(grupo_actual, "#fff")}; color: {texto_grupos.get(grupo_actual, "#000")}; border: 2px dashed {texto_grupos.get(grupo_actual, "#000")}')
-                elif val == 'T3':
-                    estilos.append('background-color: #263238; color: white; font-weight: bold') # Negro para Noche siempre
-                else:
-                    estilos.append(f'background-color: {colores_grupos.get(grupo_actual, "#fff")}; color: {texto_grupos.get(grupo_actual, "#000")}; border: 1px solid #e0e0e0')
+                v_str = str(val)
+                if 'DESC' in v_str: estilos.append('background-color: #EF5350; color: white; font-weight: bold')
+                elif 'DISPO' in v_str and v_str != 'DISPONIBLE': estilos.append(f'background-color: {colores_grupos.get(g_actual, "#fff")}; color: {texto_grupos.get(g_actual, "#000")}; border: 2px dashed {texto_grupos.get(g_actual, "#000")}')
+                elif v_str == 'T3': estilos.append('background-color: #263238; color: white; font-weight: bold')
+                else: estilos.append(f'background-color: {colores_grupos.get(g_actual, "#fff")}; color: {texto_grupos.get(g_actual, "#000")}; border: 1px solid #e0e0e0')
             return estilos
 
-        st.subheader("📅 Malla Operativa por Células")
         st.dataframe(piv.style.apply(aplicar_estilos, axis=1), use_container_width=True)
