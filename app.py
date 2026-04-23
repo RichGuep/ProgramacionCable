@@ -5,7 +5,7 @@ import calendar
 from datetime import datetime
 
 # --- 1. CONFIGURACIÓN ---
-st.set_page_config(page_title="MovilGo - Rotación PM-Noche-AM", layout="wide", page_icon="🔄")
+st.set_page_config(page_title="MovilGo - Rotación Forzada", layout="wide", page_icon="🔄")
 LISTA_TURNOS = ["T1", "T2", "T3"] 
 DIAS_SEMANA = ["Lunes", "Martes", "Miercoles", "Jueves", "Viernes", "Sabado", "Domingo"]
 
@@ -53,9 +53,9 @@ if df_raw is not None:
     num_tcb = len(df_raw[df_raw['cargo'].str.contains('Tecnico B', case=False)])
     num_g = min(num_mas//m_req if m_req>0 else 99, num_tca//ta_req if ta_req>0 else 99, num_tcb//tb_req if tb_req>0 else 99)
 
-    st.title(f"🔄 Rotación Semanal Ciclo: T2 ➔ T3 ➔ T1")
+    st.title(f"🔄 Rotación Estricta: PM (T2) ➔ NOCHE (T3) ➔ AM (T1)")
     
-    with st.expander("📅 Configuración de Descansos", expanded=True):
+    with st.expander("📅 Configuración de Descansos por Grupo", expanded=True):
         n_map, d_map = {}, {}
         cols = st.columns(num_g if num_g > 0 else 1)
         for i in range(num_g):
@@ -84,26 +84,32 @@ if df_raw is not None:
     d_info = [{"n": d, "nom": DIAS_SEMANA[datetime(ano_sel, mes_num, d).weekday()], "sem": datetime(ano_sel, mes_num, d).isocalendar()[1], "label": f"{d:02d}-{DIAS_SEMANA[datetime(ano_sel, mes_num, d).weekday()][:3]}"} for d in range(1, num_dias + 1)]
     semanas = sorted(list(set([d["sem"] for d in d_info])))
 
-    if st.button("⚡ GENERAR MALLA CON ROTACIÓN PM-T3-AM"):
-        prob = LpProblem("MovilGo_Rotacion_Ciclo", LpMaximize)
+    if st.button("⚡ GENERAR MALLA CON CICLO T2-T3-T1"):
+        # Se cambia a LpMinimize para penalizar la falta de asignación
+        prob = LpProblem("MovilGo_Ciclo_Forzado", LpMinimize)
         asig = LpVariable.dicts("Asig", (g_finales, semanas, LISTA_TURNOS), cat='Binary')
         
-        prob += lpSum([asig[g][s][t] for g in g_finales for s in semanas for t in LISTA_TURNOS])
+        # Objetivo: Minimizar los huecos (forzar a que todos tengan turno)
+        prob += lpSum([ (1 - asig[g][s][t]) for g in g_finales for s in semanas for t in LISTA_TURNOS])
         
+        # 1. Cobertura: Cada turno debe tener al menos un grupo por semana
         for s in semanas:
-            for t in LISTA_TURNOS: prob += lpSum([asig[g][s][t] for g in g_finales]) >= 1
-            for g in g_finales: prob += lpSum([asig[g][s][t] for t in LISTA_TURNOS]) <= 1
-        
+            for t in LISTA_TURNOS:
+                prob += lpSum([asig[g][s][t] for g in g_finales]) >= 1
+            # Cada grupo solo puede tener un turno por semana
+            for g in g_finales:
+                prob += lpSum([asig[g][s][t] for t in LISTA_TURNOS]) == 1
+
+        # 2. CICLO FORZADO: T2 (PM) -> T3 (Noche) -> T1 (AM)
         for g in g_finales:
             for i in range(len(semanas)-1):
                 s1, s2 = semanas[i], semanas[i+1]
-                # CICLO SOLICITADO: PM (T2) -> Noche (T3) -> AM (T1)
+                # Si en s1 es T2, en s2 DEBE ser T3
                 prob += asig[g][s1]["T2"] <= asig[g][s2]["T3"]
+                # Si en s1 es T3, en s2 DEBE ser T1
                 prob += asig[g][s1]["T3"] <= asig[g][s2]["T1"]
+                # Si en s1 es T1, en s2 DEBE ser T2
                 prob += asig[g][s1]["T1"] <= asig[g][s2]["T2"]
-                
-                # REGLAS DE SEGURIDAD (No cambios bruscos)
-                prob += asig[g][s1]["T3"] + asig[g][s2]["T1"] <= 1 # Bloqueo post-noche inmediato a AM
 
         prob.solve(PULP_CBC_CMD(msg=0))
 
@@ -111,20 +117,20 @@ if df_raw is not None:
         for s in semanas:
             for t in LISTA_TURNOS:
                 for g in g_finales:
-                    if value(asig[g][s][t]) == 1: res_map[(g, s)] = t
+                    if value(asig[g][s][t]) == 1:
+                        res_map[(g, s)] = t
 
         final_rows = []
         for d_i in d_info:
             for g in g_finales:
-                t_f = res_map.get((g, d_i["sem"]), "DISPONIBLE")
+                t_f = res_map.get((g, d_i["sem"]), "ERROR")
                 es_l = (d_i["nom"] == d_map[g])
                 for _, m in df_celulas[df_celulas['grupo'] == g].iterrows():
                     res_final = t_f
                     if es_l: res_final = "DESC. LEY"
                     final_rows.append({"Dia": d_i["n"], "Label": d_i["label"], "Empleado": m['nombre'], "Cargo": m['cargo'], "Grupo": g, "Final": res_final})
 
-        df_f = pd.DataFrame(final_rows)
-        st.session_state['malla_final'] = df_f
+        st.session_state['malla_final'] = pd.DataFrame(final_rows)
 
     if 'malla_final' in st.session_state:
         df_f = st.session_state['malla_final']
