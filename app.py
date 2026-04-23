@@ -5,7 +5,7 @@ import calendar
 from datetime import datetime
 
 # --- 1. CONFIGURACIÓN ---
-st.set_page_config(page_title="MovilGo - Rotación Forzada", layout="wide", page_icon="🔄")
+st.set_page_config(page_title="MovilGo - Rotación Post-Descanso", layout="wide", page_icon="🔄")
 LISTA_TURNOS = ["T1", "T2", "T3"] 
 DIAS_SEMANA = ["Lunes", "Martes", "Miercoles", "Jueves", "Viernes", "Sabado", "Domingo"]
 
@@ -53,9 +53,10 @@ if df_raw is not None:
     num_tcb = len(df_raw[df_raw['cargo'].str.contains('Tecnico B', case=False)])
     num_g = min(num_mas//m_req if m_req>0 else 99, num_tca//ta_req if ta_req>0 else 99, num_tcb//tb_req if tb_req>0 else 99)
 
-    st.title(f"🔄 Rotación Estricta: PM (T2) ➔ NOCHE (T3) ➔ AM (T1)")
+    st.title(f"🔄 Malla con Rotación POST-DESCANSO")
+    st.info("💡 El cambio de turno solo ocurre después de que el trabajador toma su día de descanso de ley.")
     
-    with st.expander("📅 Configuración de Descansos por Grupo", expanded=True):
+    with st.expander("📅 Configuración de Descansos", expanded=True):
         n_map, d_map = {}, {}
         cols = st.columns(num_g if num_g > 0 else 1)
         for i in range(num_g):
@@ -79,58 +80,66 @@ if df_raw is not None:
     df_celulas = pd.DataFrame(c_list)
     g_finales = list(n_map.values())
 
-    # Cronología
     num_dias = calendar.monthrange(ano_sel, mes_num)[1]
     d_info = [{"n": d, "nom": DIAS_SEMANA[datetime(ano_sel, mes_num, d).weekday()], "sem": datetime(ano_sel, mes_num, d).isocalendar()[1], "label": f"{d:02d}-{DIAS_SEMANA[datetime(ano_sel, mes_num, d).weekday()][:3]}"} for d in range(1, num_dias + 1)]
     semanas = sorted(list(set([d["sem"] for d in d_info])))
 
-    if st.button("⚡ GENERAR MALLA CON CICLO T2-T3-T1"):
-        # Se cambia a LpMinimize para penalizar la falta de asignación
-        prob = LpProblem("MovilGo_Ciclo_Forzado", LpMinimize)
+    if st.button("⚡ GENERAR MALLA (CICLO POST-DESCANSO)"):
+        prob = LpProblem("MovilGo_PostDescanso", LpMinimize)
         asig = LpVariable.dicts("Asig", (g_finales, semanas, LISTA_TURNOS), cat='Binary')
         
-        # Objetivo: Minimizar los huecos (forzar a que todos tengan turno)
         prob += lpSum([ (1 - asig[g][s][t]) for g in g_finales for s in semanas for t in LISTA_TURNOS])
         
-        # 1. Cobertura: Cada turno debe tener al menos un grupo por semana
         for s in semanas:
-            for t in LISTA_TURNOS:
-                prob += lpSum([asig[g][s][t] for g in g_finales]) >= 1
-            # Cada grupo solo puede tener un turno por semana
-            for g in g_finales:
-                prob += lpSum([asig[g][s][t] for t in LISTA_TURNOS]) == 1
+            for t in LISTA_TURNOS: prob += lpSum([asig[g][s][t] for g in g_finales]) >= 1
+            for g in g_finales: prob += lpSum([asig[g][s][t] for t in LISTA_TURNOS]) == 1
 
-        # 2. CICLO FORZADO: T2 (PM) -> T3 (Noche) -> T1 (AM)
         for g in g_finales:
             for i in range(len(semanas)-1):
                 s1, s2 = semanas[i], semanas[i+1]
-                # Si en s1 es T2, en s2 DEBE ser T3
                 prob += asig[g][s1]["T2"] <= asig[g][s2]["T3"]
-                # Si en s1 es T3, en s2 DEBE ser T1
                 prob += asig[g][s1]["T3"] <= asig[g][s2]["T1"]
-                # Si en s1 es T1, en s2 DEBE ser T2
                 prob += asig[g][s1]["T1"] <= asig[g][s2]["T2"]
-
+        
         prob.solve(PULP_CBC_CMD(msg=0))
 
+        # Mapa de turnos base por semana
         res_map = {}
         for s in semanas:
             for t in LISTA_TURNOS:
                 for g in g_finales:
-                    if value(asig[g][s][t]) == 1:
-                        res_map[(g, s)] = t
+                    if value(asig[g][s][t]) == 1: res_map[(g, s)] = t
 
         final_rows = []
-        for d_i in d_info:
-            for g in g_finales:
-                t_f = res_map.get((g, d_i["sem"]), "ERROR")
-                es_l = (d_i["nom"] == d_map[g])
-                for _, m in df_celulas[df_celulas['grupo'] == g].iterrows():
-                    res_final = t_f
-                    if es_l: res_final = "DESC. LEY"
-                    final_rows.append({"Dia": d_i["n"], "Label": d_i["label"], "Empleado": m['nombre'], "Cargo": m['cargo'], "Grupo": g, "Final": res_final})
+        for g in g_finales:
+            dia_descanso_config = d_map[g]
+            miembros = df_celulas[df_celulas['grupo'] == g]
+            
+            for _, m in miembros.iterrows():
+                # Lógica de rotación individual: el turno cambia DESPUÉS del descanso
+                turno_actual = res_map.get((g, semanas[0])) 
+                ha_descansado_esta_semana = False
+                
+                for d_i in d_info:
+                    es_ley = (d_i["nom"] == dia_descanso_config)
+                    
+                    # Si es el día de descanso, marcamos y permitimos el cambio de turno para el día siguiente
+                    if es_ley:
+                        res_dia = "DESC. LEY"
+                        # Al descansar, el turno para los días siguientes de esta semana será el de la 'Semana Actual'
+                        # Pero antes del descanso, debía mantener el de la 'Semana Anterior'
+                        # Para simplificar y cumplir tu orden: el turno de la semana calendario se activa POST-DESCANSO
+                        turno_actual = res_map.get((g, d_i["sem"]))
+                    else:
+                        res_dia = turno_actual
+                    
+                    final_rows.append({
+                        "Dia": d_i["n"], "Label": d_i["label"], "Empleado": m['nombre'], 
+                        "Cargo": m['cargo'], "Grupo": g, "Final": res_dia
+                    })
 
-        st.session_state['malla_final'] = pd.DataFrame(final_rows)
+        df_f = pd.DataFrame(final_rows)
+        st.session_state['malla_final'] = df_f
 
     if 'malla_final' in st.session_state:
         df_f = st.session_state['malla_final']
