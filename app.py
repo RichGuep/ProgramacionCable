@@ -5,7 +5,7 @@ import calendar
 from datetime import datetime
 
 # --- 1. CONFIGURACIÓN ---
-st.set_page_config(page_title="MovilGo Pro - Optimización T3", layout="wide", page_icon="🛡️")
+st.set_page_config(page_title="MovilGo Pro - Blindaje T3", layout="wide", page_icon="🛡️")
 LISTA_TURNOS = ["T1", "T2", "T3"] 
 
 # --- 2. LOGIN ---
@@ -55,9 +55,9 @@ if df_raw is not None:
 
     num_g = obtener_cantidad_grupos(df_raw, m_req, ta_req, tb_req)
 
-    st.title(f"📊 Programación Estratégica T3: {mes_sel}")
+    st.title(f"📊 Programación Blindada T3: {mes_sel}")
     
-    with st.expander("🏷️ Gestión de Grupos y Descansos", expanded=True):
+    with st.expander("🏷️ Nombres y Descansos de Grupos", expanded=True):
         nombres_map, descansos_map = {}, {}
         cols = st.columns(num_g if num_g > 0 else 1)
         for i in range(num_g):
@@ -85,16 +85,15 @@ if df_raw is not None:
     df_celulas = pd.DataFrame(final_list_c)
     g_finales = list(nombres_map.values())
 
-    # Fechas
     num_dias = calendar.monthrange(ano_sel, mes_num)[1]
     d_range = range(1, num_dias + 1)
     dias_es = ["Lun", "Mar", "Mie", "Jue", "Vie", "Sab", "Dom"]
     d_info = [{"n": d, "nom": dias_es[datetime(ano_sel, mes_num, d).weekday()], "sem": datetime(ano_sel, mes_num, d).isocalendar()[1], "lab": f"{d}-{dias_es[datetime(ano_sel, mes_num, d).weekday()]}"} for d in d_range]
     semanas_list = sorted(list(set([d["sem"] for d in d_info])))
 
-    if st.button("⚡ GENERAR MALLA (CONTINUIDAD T3)"):
-        with st.status("Aplicando regla de compensatorio para T3...", expanded=True) as status:
-            prob = LpProblem("MovilGo_T3_Optimize", LpMaximize)
+    if st.button("⚡ GENERAR MALLA (BLOQUEO T3 + COMPENSATORIO MARTES)"):
+        with st.status("Aplicando reglas de seguridad T3...", expanded=True) as status:
+            prob = LpProblem("MovilGo_T3_Final", LpMaximize)
             asig_sem = LpVariable.dicts("AsigSem", (g_finales, semanas_list, LISTA_TURNOS), cat='Binary')
             
             prob += lpSum([asig_sem[g][s][t] for g in g_finales for s in semanas_list for t in LISTA_TURNOS])
@@ -108,7 +107,9 @@ if df_raw is not None:
             for g in g_finales:
                 for i in range(len(semanas_list)-1):
                     s1, s2 = semanas_list[i], semanas_list[i+1]
-                    # Ciclo T3 -> T2 -> T1
+                    # Bloqueo total: De T3 solo se puede ir a PM (T2) después de un descanso
+                    # Y se prohíbe pasar de T3 a T1 (AM) directamente.
+                    prob += asig_sem[g][s1]["T3"] + asig_sem[g][s2]["T1"] <= 1
                     prob += asig_sem[g][s1]["T3"] <= asig_sem[g][s2]["T2"]
                     prob += asig_sem[g][s1]["T2"] <= asig_sem[g][s2]["T1"]
 
@@ -139,37 +140,36 @@ if df_raw is not None:
             p_rows = []
             for _, g_emp in df_res.groupby("Empleado"):
                 g_emp = g_emp.sort_values("Dia").copy()
-                # Deuda de compensatorio por T3
                 deuda_t3 = False
                 
                 for s in semanas_list:
                     f_s = g_emp[g_emp['Semana'] == s]
-                    t_s = f_s['Turno'].iloc[0]
+                    t_s = str(f_s['Turno'].iloc[0])
+                    dia_ley_conf = g_emp['Ley'].any() # Si tiene ley configurada en esta semana
                     
-                    if "T3" in t_s:
-                        # En T3, NO se toma el descanso de ley, se trabaja derecho
+                    # REGLA: Si está en T3 y su ley es Vie o Sab, trabajar derecho y generar deuda
+                    if "T3" in t_s and (descansos_map[g_emp['Grupo'].iloc[0]] in ["Viernes", "Sabado"]):
                         g_emp.loc[f_s.index, 'Resultado'] = t_s
                         deuda_t3 = True
                     else:
-                        # Si no es T3, aplicamos ley normal
                         g_emp.loc[f_s.index, 'Resultado'] = t_s
                         
-                        # Si venimos de una deuda de T3, el martes de esta semana es COMPENSATORIO
+                        # Pagar deuda el Martes de la semana siguiente
                         if deuda_t3:
                             idx_c = f_s[f_s['Nom_Dia'] == 'Mar'].index
                             if not idx_c.empty:
                                 g_emp.loc[idx_c, 'Resultado'] = "DESC. COMPENSATORIO"
                                 deuda_t3 = False
                         
-                        # Aplicar ley si no se ha compensado ya en T3
+                        # Aplicar ley normal si no es semana de T3 con deuda
                         idx_l = f_s[f_s['Ley']].index
-                        if not idx_l.empty:
-                            g_emp.loc[idx_l, 'Resultado'] = "DESC. LEY"
+                        if not idx_l.empty and g_emp.loc[idx_l, 'Resultado'].values[0] not in ["DESC. COMPENSATORIO"]:
+                             g_emp.loc[idx_l, 'Resultado'] = "DESC. LEY"
                             
                 p_rows.append(g_emp)
 
             st.session_state['malla_final'] = pd.concat(p_rows)
-            status.update(label="✅ Malla generada: T3 continuo con compensatorio en Martes.", state="complete")
+            status.update(label="✅ Malla generada: T3 continuo para Vie/Sab con compensatorio Martes.", state="complete")
 
     if 'malla_final' in st.session_state:
         df_v = st.session_state['malla_final']
