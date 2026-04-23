@@ -5,7 +5,7 @@ import calendar
 from datetime import datetime
 
 # --- 1. CONFIGURACIÓN ---
-st.set_page_config(page_title="MovilGo - Bloqueo Salida T3", layout="wide", page_icon="🚫")
+st.set_page_config(page_title="MovilGo - Seguridad Total", layout="wide", page_icon="🛡️")
 LISTA_TURNOS = ["T1", "T2", "T3"] 
 DIAS_SEMANA = ["Lunes", "Martes", "Miercoles", "Jueves", "Viernes", "Sabado", "Domingo"]
 
@@ -38,7 +38,7 @@ df_raw = load_base()
 
 if df_raw is not None:
     with st.sidebar:
-        st.header("⚙️ Parámetros")
+        st.header("⚙️ Parámetros Operativos")
         m_req = st.number_input("Masters", 1, 5, 2)
         ta_req = st.number_input("Técnicos A", 1, 15, 7)
         tb_req = st.number_input("Técnicos B", 1, 10, 3)
@@ -53,19 +53,19 @@ if df_raw is not None:
     num_tcb = len(df_raw[df_raw['cargo'].str.contains('Tecnico B', case=False)])
     num_g = min(num_mas//m_req if m_req>0 else 99, num_tca//ta_req if ta_req>0 else 99, num_tcb//tb_req if tb_req>0 else 99)
 
-    st.title(f"🚫 Control de Rotación Segura: {mes_sel}")
+    st.title(f"🛡️ Programación con Doble Bloqueo: {mes_sel}")
     
-    with st.expander("📅 Parametrizar Descansos de Ley", expanded=True):
+    with st.expander("📅 Configuración de Descansos por Grupo", expanded=True):
         n_map, d_map = {}, {}
         cols = st.columns(num_g if num_g > 0 else 1)
         for i in range(num_g):
             with cols[i]:
                 n_s = st.text_input(f"Nombre G{i+1}", f"GRUPO {i+1}", key=f"n_{i}")
-                d_s = st.selectbox(f"Descanso", DIAS_SEMANA, index=i % 7, key=f"d_{i}")
+                d_s = st.selectbox(f"Día Descanso", DIAS_SEMANA, index=i % 7, key=f"d_{i}")
                 n_map[f"G{i+1}"] = n_s
                 d_map[n_s] = d_s
 
-    # Armado de personal
+    # Armado de células
     mas_p, tca_p, tcb_p = df_raw[df_raw['cargo'].str.contains('Master', case=False)].copy(), df_raw[df_raw['cargo'].str.contains('Tecnico A', case=False)].copy(), df_raw[df_raw['cargo'].str.contains('Tecnico B', case=False)].copy()
     c_list = []
     for i in range(num_g):
@@ -84,8 +84,8 @@ if df_raw is not None:
     d_info = [{"n": d, "nom": DIAS_SEMANA[datetime(ano_sel, mes_num, d).weekday()], "sem": datetime(ano_sel, mes_num, d).isocalendar()[1], "label": f"{d:02d}-{DIAS_SEMANA[datetime(ano_sel, mes_num, d).weekday()][:3]}"} for d in range(1, num_dias + 1)]
     semanas = sorted(list(set([d["sem"] for d in d_info])))
 
-    if st.button("⚡ GENERAR MALLA CON BLOQUEO POST-NOCHE"):
-        prob = LpProblem("MovilGo_NoFatiga", LpMaximize)
+    if st.button("⚡ GENERAR MALLA SEGURA (T3/T2/T1 BLOQUEADOS)"):
+        prob = LpProblem("MovilGo_UltraSafe", LpMaximize)
         asig = LpVariable.dicts("Asig", (g_finales, semanas, LISTA_TURNOS), cat='Binary')
         
         prob += lpSum([asig[g][s][t] for g in g_finales for s in semanas for t in LISTA_TURNOS])
@@ -97,12 +97,16 @@ if df_raw is not None:
         for g in g_finales:
             for i in range(len(semanas)-1):
                 s1, s2 = semanas[i], semanas[i+1]
-                # RESTRICCIÓN DE ORO: Si s1 es T3, s2 NO puede ser T1 ni T2
-                # Esto obliga al sistema a dar descanso o buscar otra configuración
+                # 1. BLOQUEO SALIDA DE NOCHE: Si s1 fue T3, s2 no puede ser AM ni PM
                 prob += asig[g][s1]["T3"] + asig[g][s2]["T1"] <= 1
                 prob += asig[g][s1]["T3"] + asig[g][s2]["T2"] <= 1
-                # Forzar secuencia lógica de rotación
-                prob += asig[g][s1]["T2"] <= asig[g][s2]["T1"]
+                
+                # 2. BLOQUEO T2 A T1: No puede pasar de Tarde a Mañana sin descanso intermedio
+                # Esta regla obliga a que si viene de T2, el sistema busque otra opción para s2
+                prob += asig[g][s1]["T2"] + asig[g][s2]["T1"] <= 1
+                
+                # Forzar que la rotación sea T1 -> T3 o similar, respetando descansos
+                prob += asig[g][s1]["T1"] <= asig[g][s2]["T3"]
 
         prob.solve(PULP_CBC_CMD(msg=0))
 
@@ -110,8 +114,7 @@ if df_raw is not None:
         for s in semanas:
             for t in LISTA_TURNOS:
                 for g in g_finales:
-                    if value(asig[g][s][t]) == 1:
-                        res_map[(g, s)] = t
+                    if value(asig[g][s][t]) == 1: res_map[(g, s)] = t
 
         final_rows = []
         for d_i in d_info:
@@ -121,11 +124,7 @@ if df_raw is not None:
                 for _, m in df_celulas[df_celulas['grupo'] == g].iterrows():
                     res_final = t_f
                     if es_l: res_final = "DESC. LEY"
-                    
-                    final_rows.append({
-                        "Dia": d_i["n"], "Label": d_i["label"], "Nom_Dia": d_i["nom"], 
-                        "Empleado": m['nombre'], "Cargo": m['cargo'], "Grupo": g, "Final": res_final
-                    })
+                    final_rows.append({"Dia": d_i["n"], "Label": d_i["label"], "Nom_Dia": d_i["nom"], "Empleado": m['nombre'], "Cargo": m['cargo'], "Grupo": g, "Final": res_final})
 
         df_f = pd.DataFrame(final_rows)
         st.session_state['malla_final'] = df_f
