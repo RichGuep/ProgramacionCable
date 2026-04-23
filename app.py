@@ -5,11 +5,11 @@ import calendar
 from datetime import datetime
 import io
 
-# --- 1. CONFIGURACIÓN ---
+# --- 1. CONFIGURACIÓN DE PÁGINA ---
 st.set_page_config(page_title="MovilGo Pro - Control Operativo", layout="wide", page_icon="⚡")
 LISTA_TURNOS = ["AM", "PM", "Noche"]
 
-# --- 2. ESTILOS ---
+# --- 2. ESTILOS PERSONALIZADOS ---
 st.markdown("""
     <style>
     @import url('https://fonts.cdnfonts.com/css/century-gothic');
@@ -21,7 +21,7 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
-# --- 3. LOGIN ---
+# --- 3. SISTEMA DE AUTENTICACIÓN ---
 def login_page():
     if 'auth' not in st.session_state: st.session_state['auth'] = False
     if not st.session_state['auth']:
@@ -39,37 +39,38 @@ def login_page():
 
 login_page()
 
-# --- 4. MOTOR DE OPTIMIZACIÓN ---
+# --- 4. CARGA DE DATOS ---
 @st.cache_data
 def load_data():
     try:
-        # Intenta cargar el archivo localmente
         df = pd.read_excel("empleados.xlsx")
         df.columns = df.columns.str.strip().str.lower()
         c_nom = next((c for c in df.columns if 'nom' in c or 'emp' in c), "nombre")
         c_car = next((c for c in df.columns if 'car' in c), "cargo")
         c_des = next((c for c in df.columns if 'des' in c), "descanso")
         return df.rename(columns={c_nom: 'nombre', c_car: 'cargo', c_des: 'descanso_ley'})
-    except: 
-        st.error("No se encontró el archivo 'empleados.xlsx'. Asegúrate de que esté en la misma carpeta.")
+    except Exception as e:
+        st.error(f"Error al cargar 'empleados.xlsx': {e}")
         return None
 
 df_raw = load_data()
 
+# --- 5. INTERFAZ PRINCIPAL Y LÓGICA ---
 if df_raw is not None:
     with st.sidebar:
         st.header("⚙️ Configuración")
         ano_sel = st.selectbox("Año", [2025, 2026], index=1)
-        mes_sel = st.selectbox("Mes", ["Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio", "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"], index=datetime.now().month - 1)
-        mes_num = ["Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio", "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"].index(mes_sel) + 1
-        cargo_sel = st.selectbox("Cargo", sorted(df_raw['cargo'].unique()))
-        cupo_manual = st.number_input("Cupo por Turno", 1, 15, 2)
-        peso_estabilidad = st.slider("Estabilidad de Turno", 1, 100, 60)
+        meses_nombres = ["Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio", "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"]
+        mes_sel = st.selectbox("Mes", meses_nombres, index=datetime.now().month - 1)
+        mes_num = meses_nombres.index(mes_sel) + 1
+        
+        cargo_sel = st.selectbox("Cargo a Programar", sorted(df_raw['cargo'].unique()))
+        cupo_manual = st.number_input("Cupo máximo por Turno", 1, 30, 2)
+        peso_estabilidad = st.slider("Preferencia: Estabilidad de Turno", 1, 100, 60)
 
+    # Cálculo de días del mes
     num_dias = calendar.monthrange(ano_sel, mes_num)[1]
     dias_range = range(1, num_dias + 1)
-    
-    # Mapeo de días en español
     dias_nombres_es = ["Lun", "Mar", "Mie", "Jue", "Vie", "Sab", "Dom"]
     
     dias_info = []
@@ -82,154 +83,161 @@ if df_raw is not None:
             "semana": fecha.isocalendar()[1], 
             "label": f"{d} - {dias_nombres_es[idx_dia]}"
         })
-        
     semanas_mes = sorted(list(set([d["semana"] for d in dias_info])))
 
+    # --- BOTÓN GENERAR CON INDICADORES DE CARGA ---
     if st.button("🚀 GENERAR MALLA 2+2"):
-        df_f = df_raw[df_raw['cargo'] == cargo_sel].copy()
-        nombres = df_f['nombre'].tolist()
-        
-        prob = LpProblem("MovilGo_2_2", LpMaximize)
-        asig = LpVariable.dicts("Asig", (nombres, dias_range, LISTA_TURNOS), cat='Binary')
-        mantiene = LpVariable.dicts("Mantiene", (nombres, range(2, num_dias + 1), LISTA_TURNOS), cat='Binary')
-        noche_sem = LpVariable.dicts("NocheSem", (nombres, semanas_mes), cat='Binary')
-        
-        prob += lpSum([asig[e][d][t] for e in nombres for d in dias_range for t in LISTA_TURNOS]) + \
-                lpSum([mantiene[e][d][t] for e in nombres for d in range(2, num_dias + 1) for t in LISTA_TURNOS]) * peso_estabilidad
-
-        for d in dias_range:
-            for t in LISTA_TURNOS:
-                prob += lpSum([asig[e][d][t] for e in nombres]) <= cupo_manual
-
-        for e in nombres:
-            row = df_f[df_f['nombre'] == e].iloc[0]
-            desc_val = str(row['descanso_ley']).lower()
+        with st.status("Iniciando motor de optimización...", expanded=True) as status:
             
-            # --- MEJORA: Detección de Contrato (Viernes, Sábado o Domingo) ---
-            if "vie" in desc_val:
-                dia_ley_pref = "Vie"
-            elif "sab" in desc_val:
-                dia_ley_pref = "Sab"
-            else:
-                dia_ley_pref = "Dom"
+            st.write("🔍 Filtrando personal y analizando contratos (Vie/Sab/Dom)...")
+            df_f = df_raw[df_raw['cargo'] == cargo_sel].copy()
+            nombres = df_f['nombre'].tolist()
+            progress_bar = st.progress(0)
             
-            # Máximo 2 semanas de noche
-            for s in semanas_mes:
-                d_s = [di["n"] for di in dias_info if di["semana"] == s]
-                for d in d_s: prob += noche_sem[e][s] >= asig[e][d]["Noche"]
-            prob += lpSum([noche_sem[e][s] for s in semanas_mes]) <= 2
+            # Definición del problema
+            st.write("🏗️ Construyendo modelo matemático de restricciones...")
+            prob = LpProblem("MovilGo_Pro_2_2", LpMaximize)
+            asig = LpVariable.dicts("Asig", (nombres, dias_range, LISTA_TURNOS), cat='Binary')
+            mantiene = LpVariable.dicts("Mantiene", (nombres, range(2, num_dias + 1), LISTA_TURNOS), cat='Binary')
+            noche_sem = LpVariable.dicts("NocheSem", (nombres, semanas_mes), cat='Binary')
+            
+            progress_bar.progress(20)
 
+            # Función Objetivo: Maximizar asignación y estabilidad
+            prob += lpSum([asig[e][d][t] for e in nombres for d in dias_range for t in LISTA_TURNOS]) + \
+                    lpSum([mantiene[e][d][t] for e in nombres for d in range(2, num_dias + 1) for t in LISTA_TURNOS]) * peso_estabilidad
+
+            # Restricciones
             for d in dias_range:
-                prob += lpSum([asig[e][d][t] for t in LISTA_TURNOS]) <= 1
-                if d > 1:
-                    for t in LISTA_TURNOS:
-                        prob += mantiene[e][d][t] <= asig[e][d][t]
-                        prob += mantiene[e][d][t] <= asig[e][d-1][t]
-                if d < num_dias:
-                    prob += asig[e][d]["Noche"] + asig[e][d+1]["AM"] <= 1
-                    prob += asig[e][d]["Noche"] + asig[e][d+1]["PM"] <= 1
-                    prob += asig[e][d]["PM"] + asig[e][d+1]["AM"] <= 1
+                for t in LISTA_TURNOS:
+                    prob += lpSum([asig[e][d][t] for e in nombres]) <= cupo_manual
+
+            for e in nombres:
+                row = df_f[df_f['nombre'] == e].iloc[0]
+                desc_val = str(row['descanso_ley']).lower()
+                
+                # Clasificación de contrato por empleado
+                if "vie" in desc_val: dia_l_pref = "Vie"
+                elif "sab" in desc_val: dia_l_pref = "Sab"
+                else: dia_l_pref = "Dom"
+                
+                for s in semanas_mes:
+                    d_s = [di["n"] for di in dias_info if di["semana"] == s]
+                    for d in d_s: prob += noche_sem[e][s] >= asig[e][d]["Noche"]
+                prob += lpSum([noche_sem[e][s] for s in semanas_mes]) <= 2
+
+                for d in dias_range:
+                    prob += lpSum([asig[e][d][t] for t in LISTA_TURNOS]) <= 1
+                    if d > 1:
+                        for t in LISTA_TURNOS:
+                            prob += mantiene[e][d][t] <= asig[e][d][t]
+                            prob += mantiene[e][d][t] <= asig[e][d-1][t]
+                    if d < num_dias:
+                        prob += asig[e][d]["Noche"] + asig[e][d+1]["AM"] <= 1
+                        prob += asig[e][d]["Noche"] + asig[e][d+1]["PM"] <= 1
+                        prob += asig[e][d]["PM"] + asig[e][d+1]["AM"] <= 1
+                
+                # Aplicar 2 descansos obligatorios en su día de contrato
+                d_ley_m = [di["n"] for di in dias_info if di["nombre"] == dia_l_pref]
+                prob += lpSum([asig[e][d][t] for d in d_ley_m for t in LISTA_TURNOS]) <= (len(d_ley_m) - 2)
+                prob += lpSum([asig[e][d][t] for d in dias_range for t in LISTA_TURNOS]) >= 18 
+
+            progress_bar.progress(50)
+            st.write("🧠 Resolviendo matriz operativa (PULP_CBC)...")
+            prob.solve(PULP_CBC_CMD(msg=0))
             
-            # Restricción de Ley: Obligatorio 2 descansos en su día de ley (Vie, Sab o Dom)
-            d_ley_m = [di["n"] for di in dias_info if di["nombre"] == dia_ley_pref]
-            prob += lpSum([asig[e][d][t] for d in d_ley_m for t in LISTA_TURNOS]) <= (len(d_ley_m) - 2)
-            prob += lpSum([asig[e][d][t] for d in dias_range for t in LISTA_TURNOS]) >= 18 
-
-        prob.solve(PULP_CBC_CMD(msg=0))
-
-        if LpStatus[prob.status] == 'Optimal':
-            res_list = []
-            for di in dias_info:
-                for e in nombres:
-                    t_asig = "---"
-                    for t in LISTA_TURNOS:
-                        if value(asig[e][di["n"]][t]) == 1: t_asig = t
-                    res_list.append({
-                        "Dia": di["n"], 
-                        "Label": di["label"], 
-                        "Nom_Dia": di["nombre"], 
-                        "Empleado": e, 
-                        "Turno": t_asig, 
-                        "Ley": df_f[df_f['nombre']==e]['descanso_ley'].values[0]
-                    })
-            
-            df_res = pd.DataFrame(res_list)
-            lista_final = []
-            for emp, grupo in df_res.groupby("Empleado"):
-                grupo = grupo.sort_values("Dia").copy()
+            if LpStatus[prob.status] == 'Optimal':
+                progress_bar.progress(80)
+                st.write("✨ Finalizando post-procesamiento de descansos...")
                 
-                # Detectar día de ley para el post-procesamiento
-                l_val = str(grupo['Ley'].iloc[0]).lower()
-                if "vie" in l_val: dia_l = "Vie"
-                elif "sab" in l_val: dia_l = "Sab"
-                else: dia_l = "Dom"
+                res_list = []
+                for di in dias_info:
+                    for e in nombres:
+                        t_asig = "---"
+                        for t in LISTA_TURNOS:
+                            if value(asig[e][di["n"]][t]) == 1: t_asig = t
+                        res_list.append({
+                            "Dia": di["n"], "Label": di["label"], "Nom_Dia": di["nombre"], 
+                            "Empleado": e, "Turno": t_asig, "Ley": df_f[df_f['nombre']==e]['descanso_ley'].values[0]
+                        })
                 
-                # 1. Aplicar exactamente 2 DESC. LEY
-                idx_libres_ley = grupo[(grupo['Turno'] == '---') & (grupo['Nom_Dia'] == dia_l)].head(2).index
-                grupo.loc[idx_libres_ley, 'Turno'] = 'DESC. LEY'
-                
-                # 2. Aplicar COMPENSATORIOS por trabajar en su día de ley
-                dias_trab_ley = grupo[(grupo['Nom_Dia'] == dia_l) & (grupo['Turno'].isin(LISTA_TURNOS))]
-                for _, r_f in dias_trab_ley.iterrows():
-                    hueco = grupo[(grupo['Dia'] > r_f['Dia']) & (grupo['Dia'] <= r_f['Dia'] + 6) & (grupo['Turno'] == '---') & (~grupo['Nom_Dia'].isin(['Vie','Sab', 'Dom']))].head(1)
-                    if not hueco.empty: grupo.loc[hueco.index, 'Turno'] = 'DESC. COMPENSATORIO'
+                df_res = pd.DataFrame(res_list)
+                lista_final = []
+                for emp, grupo in df_res.groupby("Empleado"):
+                    grupo = grupo.sort_values("Dia").copy()
+                    l_val = str(grupo['Ley'].iloc[0]).lower()
+                    d_ley = "Vie" if "vie" in l_val else ("Sab" if "sab" in l_val else "Dom")
+                    
+                    # 1. Asignar DESC. LEY
+                    idx_ley = grupo[(grupo['Turno'] == '---') & (grupo['Nom_Dia'] == d_ley)].head(2).index
+                    grupo.loc[idx_ley, 'Turno'] = 'DESC. LEY'
+                    
+                    # 2. Asignar COMPENSATORIOS (Evitando Vie/Sab/Dom)
+                    t_ley = grupo[(grupo['Nom_Dia'] == d_ley) & (grupo['Turno'].isin(LISTA_TURNOS))]
+                    for _, r in t_ley.iterrows():
+                        h = grupo[(grupo['Dia'] > r['Dia']) & (grupo['Turno'] == '---') & (~grupo['Nom_Dia'].isin(['Vie','Sab','Dom']))].head(1)
+                        if not h.empty: grupo.loc[h.index, 'Turno'] = 'DESC. COMPENSATORIO'
 
-                # 3. Post-Noche
-                for i in range(len(grupo)-1):
-                    if grupo.iloc[i]['Turno'] == 'Noche' and grupo.iloc[i+1]['Turno'] == '---':
-                        grupo.iloc[i+1, grupo.columns.get_loc('Turno')] = 'DESC. POST-NOCHE'
+                    # 3. Post-Noche
+                    for i in range(len(grupo)-1):
+                        if grupo.iloc[i]['Turno'] == 'Noche' and grupo.iloc[i+1]['Turno'] == '---':
+                            grupo.iloc[i+1, grupo.columns.get_loc('Turno')] = 'DESC. POST-NOCHE'
+                    
+                    grupo.loc[grupo['Turno'] == '---', 'Turno'] = 'DISPONIBILIDAD'
+                    lista_final.append(grupo)
                 
-                # 4. TODO LO DEMÁS ES DISPONIBILIDAD
-                grupo.loc[grupo['Turno'] == '---', 'Turno'] = 'DISPONIBILIDAD'
-                lista_final.append(grupo)
-            
-            st.session_state['df_final'] = pd.concat(lista_final)
-            st.success(f"✅ Malla 2+2 generada. Configuración de planta balanceada (Vie/Sab/Dom).")
+                st.session_state['df_final'] = pd.concat(lista_final)
+                progress_bar.progress(100)
+                status.update(label="✅ Malla generada satisfactoriamente", state="complete", expanded=False)
+            else:
+                status.update(label="❌ Error: Sin solución óptima", state="error")
+                st.error("No se pudo generar la malla con los cupos actuales. Intenta aumentar el 'Cupo máximo'.")
 
+    # --- 6. VISUALIZACIÓN DE RESULTADOS ---
     if 'df_final' in st.session_state:
         df_v = st.session_state['df_final']
         
-        # KPIs de Control
-        st.subheader("📊 Control de Malla (4 Descansos/Mes)")
-        k1, k2, k3, k4 = st.columns(4)
-        with k1: st.markdown(f"<div class='metric-card'><div class='metric-title'>Descansos Ley</div><div class='metric-val'>{len(df_v[df_v['Turno'] == 'DESC. LEY'])}</div></div>", unsafe_allow_html=True)
-        with k2: st.markdown(f"<div class='metric-card'><div class='metric-title'>Compensatorios</div><div class='metric-val'>{len(df_v[df_v['Turno'] == 'DESC. COMPENSATORIO'])}</div></div>", unsafe_allow_html=True)
-        with k3: st.markdown(f"<div class='metric-card'><div class='metric-title'>Personal en Disponibilidad</div><div class='metric-val'>{len(df_v[df_v['Turno'] == 'DISPONIBILIDAD'])}</div></div>", unsafe_allow_html=True)
-        with k4: st.markdown(f"<div class='metric-card'><div class='metric-title'>Turnos Noche</div><div class='metric-val'>{len(df_v[df_v['Turno'] == 'Noche'])}</div></div>", unsafe_allow_html=True)
+        st.subheader("📊 Resumen de Control")
+        c1, c2, c3, c4 = st.columns(4)
+        with c1: st.markdown(f"<div class='metric-card'><div class='metric-title'>Descansos Ley</div><div class='metric-val'>{len(df_v[df_v['Turno'] == 'DESC. LEY'])}</div></div>", unsafe_allow_html=True)
+        with c2: st.markdown(f"<div class='metric-card'><div class='metric-title'>Compensatorios</div><div class='metric-val'>{len(df_v[df_v['Turno'] == 'DESC. COMPENSATORIO'])}</div></div>", unsafe_allow_html=True)
+        with c3: st.markdown(f"<div class='metric-card'><div class='metric-title'>Disponibilidad</div><div class='metric-val'>{len(df_v[df_v['Turno'] == 'DISPONIBILIDAD'])}</div></div>", unsafe_allow_html=True)
+        with c4: st.markdown(f"<div class='metric-card'><div class='metric-title'>Turnos Noche</div><div class='metric-val'>{len(df_v[df_v['Turno'] == 'Noche'])}</div></div>", unsafe_allow_html=True)
 
-        t1, t2, t3 = st.tabs(["📅 Malla Operativa", "⚖️ Auditoría Legal", "📥 Reportes"])
+        t_malla, t_audit, t_repo = st.tabs(["📅 Malla Operativa", "⚖️ Auditoría Legal", "📥 Reportes"])
 
-        with t1:
-            def style_map(v):
-                if v == 'DESC. LEY': return 'background-color: #fecaca; color: #991b1b; font-weight: bold'
-                if v == 'DESC. COMPENSATORIO': return 'background-color: #fef08a; color: #854d0e; font-weight: bold'
-                if v == 'DESC. POST-NOCHE': return 'background-color: #dcfce7; color: #166534; font-weight: bold'
-                if v == 'DISPONIBILIDAD': return 'color: #3b82f6; font-weight: normal'
-                if v == 'Noche': return 'background-color: #1e293b; color: white; font-weight: bold'
-                return 'color: #1e293b'
+        with t_malla:
+            def color_turnos(v):
+                colors = {
+                    'DESC. LEY': 'background-color: #fecaca; color: #991b1b; font-weight: bold',
+                    'DESC. COMPENSATORIO': 'background-color: #fef08a; color: #854d0e; font-weight: bold',
+                    'DESC. POST-NOCHE': 'background-color: #dcfce7; color: #166534; font-weight: bold',
+                    'DISPONIBILIDAD': 'color: #3b82f6',
+                    'Noche': 'background-color: #1e293b; color: white; font-weight: bold'
+                }
+                return colors.get(v, 'color: #1e293b')
             
-            m_f = df_v.pivot(index='Empleado', columns='Label', values='Turno')
-            cols = sorted(m_f.columns, key=lambda x: int(x.split(' - ')[0]))
-            st.dataframe(m_f[cols].style.map(style_map), use_container_width=True)
+            m_pivot = df_v.pivot(index='Empleado', columns='Label', values='Turno')
+            cols_ord = sorted(m_pivot.columns, key=lambda x: int(x.split(' - ')[0]))
+            st.dataframe(m_pivot[cols_ord].style.map(color_turnos), use_container_width=True)
 
-        with t2:
-            audit = []
+        with t_audit:
+            audit_data = []
             for e, g in df_v.groupby("Empleado"):
-                l_v = str(g['Ley'].iloc[0]).lower()
-                d_l = "Viernes" if "vie" in l_v else ("Sábado" if "sab" in l_v else "Domingo")
-                audit.append({
-                    "Empleado": e, 
-                    "Contrato": f"Descansa {d_l}",
-                    "Desc. Ley (Objetivo 2)": len(g[g['Turno'] == 'DESC. LEY']),
+                lv = str(g['Ley'].iloc[0]).lower()
+                contrato = "Viernes" if "vie" in lv else ("Sábado" if "sab" in lv else "Domingo")
+                audit_data.append({
+                    "Empleado": e, "Tipo Contrato": contrato,
+                    "D. Ley (Min 2)": len(g[g['Turno'] == 'DESC. LEY']),
                     "Compensatorios": len(g[g['Turno'] == 'DESC. COMPENSATORIO']),
                     "Total Descansos": len(g[g['Turno'].str.contains('DESC')]),
-                    "Estado": "✅ Cumple" if len(g[g['Turno'].str.contains('DESC')]) >= 4 else "⚠️ Revisar"
+                    "Estado": "✅ OK" if len(g[g['Turno'].str.contains('DESC')]) >= 4 else "⚠️ Revisar"
                 })
-            st.table(pd.DataFrame(audit))
+            st.table(pd.DataFrame(audit_data))
 
-        with t3:
-            output = io.BytesIO()
-            with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-                m_f[cols].to_excel(writer, sheet_name='Malla')
-                pd.DataFrame(audit).to_excel(writer, sheet_name='Auditoria', index=False)
-            st.download_button(label="📥 Descargar Programación Excel", data=output.getvalue(), file_name=f"Malla_MovilGo_Final.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+        with t_repo:
+            buf = io.BytesIO()
+            with pd.ExcelWriter(buf, engine='xlsxwriter') as writer:
+                m_pivot[cols_ord].to_excel(writer, sheet_name='Malla_Operativa')
+                pd.DataFrame(audit_data).to_excel(writer, sheet_name='Auditoria_Legal', index=False)
+            st.download_button("📥 Descargar Excel Final", buf.getvalue(), "Malla_MovilGo_2026.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
