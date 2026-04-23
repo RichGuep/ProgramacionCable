@@ -5,7 +5,7 @@ import calendar
 from datetime import datetime
 
 # --- 1. CONFIGURACIÓN ---
-st.set_page_config(page_title="MovilGo - Seguridad Total", layout="wide", page_icon="🛡️")
+st.set_page_config(page_title="MovilGo - Bloques Semanales", layout="wide", page_icon="🗓️")
 LISTA_TURNOS = ["T1", "T2", "T3"] 
 DIAS_SEMANA = ["Lunes", "Martes", "Miercoles", "Jueves", "Viernes", "Sabado", "Domingo"]
 
@@ -38,7 +38,7 @@ df_raw = load_base()
 
 if df_raw is not None:
     with st.sidebar:
-        st.header("⚙️ Parámetros Operativos")
+        st.header("⚙️ Configuración")
         m_req = st.number_input("Masters", 1, 5, 2)
         ta_req = st.number_input("Técnicos A", 1, 15, 7)
         tb_req = st.number_input("Técnicos B", 1, 10, 3)
@@ -53,9 +53,9 @@ if df_raw is not None:
     num_tcb = len(df_raw[df_raw['cargo'].str.contains('Tecnico B', case=False)])
     num_g = min(num_mas//m_req if m_req>0 else 99, num_tca//ta_req if ta_req>0 else 99, num_tcb//tb_req if tb_req>0 else 99)
 
-    st.title(f"🛡️ Programación con Doble Bloqueo: {mes_sel}")
+    st.title(f"🗓️ Malla por Bloques Semanales: {mes_sel}")
     
-    with st.expander("📅 Configuración de Descansos por Grupo", expanded=True):
+    with st.expander("📅 Configuración de Descansos", expanded=True):
         n_map, d_map = {}, {}
         cols = st.columns(num_g if num_g > 0 else 1)
         for i in range(num_g):
@@ -84,8 +84,8 @@ if df_raw is not None:
     d_info = [{"n": d, "nom": DIAS_SEMANA[datetime(ano_sel, mes_num, d).weekday()], "sem": datetime(ano_sel, mes_num, d).isocalendar()[1], "label": f"{d:02d}-{DIAS_SEMANA[datetime(ano_sel, mes_num, d).weekday()][:3]}"} for d in range(1, num_dias + 1)]
     semanas = sorted(list(set([d["sem"] for d in d_info])))
 
-    if st.button("⚡ GENERAR MALLA SEGURA (T3/T2/T1 BLOQUEADOS)"):
-        prob = LpProblem("MovilGo_UltraSafe", LpMaximize)
+    if st.button("⚡ GENERAR MALLA (BLOQUES SEMANALES)"):
+        prob = LpProblem("MovilGo_Semanal", LpMaximize)
         asig = LpVariable.dicts("Asig", (g_finales, semanas, LISTA_TURNOS), cat='Binary')
         
         prob += lpSum([asig[g][s][t] for g in g_finales for s in semanas for t in LISTA_TURNOS])
@@ -97,16 +97,10 @@ if df_raw is not None:
         for g in g_finales:
             for i in range(len(semanas)-1):
                 s1, s2 = semanas[i], semanas[i+1]
-                # 1. BLOQUEO SALIDA DE NOCHE: Si s1 fue T3, s2 no puede ser AM ni PM
-                prob += asig[g][s1]["T3"] + asig[g][s2]["T1"] <= 1
-                prob += asig[g][s1]["T3"] + asig[g][s2]["T2"] <= 1
-                
-                # 2. BLOQUEO T2 A T1: No puede pasar de Tarde a Mañana sin descanso intermedio
-                # Esta regla obliga a que si viene de T2, el sistema busque otra opción para s2
-                prob += asig[g][s1]["T2"] + asig[g][s2]["T1"] <= 1
-                
-                # Forzar que la rotación sea T1 -> T3 o similar, respetando descansos
-                prob += asig[g][s1]["T1"] <= asig[g][s2]["T3"]
+                # BLOQUEOS DE SEGURIDAD
+                prob += asig[g][s1]["T3"] + asig[g][s2]["T1"] <= 1 # No T3 -> T1
+                prob += asig[g][s1]["T3"] + asig[g][s2]["T2"] <= 1 # No T3 -> T2
+                prob += asig[g][s1]["T2"] + asig[g][s2]["T1"] <= 1 # No T2 -> T1
 
         prob.solve(PULP_CBC_CMD(msg=0))
 
@@ -119,12 +113,14 @@ if df_raw is not None:
         final_rows = []
         for d_i in d_info:
             for g in g_finales:
+                # El turno se mantiene igual para TODA la semana
                 t_f = res_map.get((g, d_i["sem"]), "DISPONIBLE")
                 es_l = (d_i["nom"] == d_map[g])
+                
                 for _, m in df_celulas[df_celulas['grupo'] == g].iterrows():
                     res_final = t_f
                     if es_l: res_final = "DESC. LEY"
-                    final_rows.append({"Dia": d_i["n"], "Label": d_i["label"], "Nom_Dia": d_i["nom"], "Empleado": m['nombre'], "Cargo": m['cargo'], "Grupo": g, "Final": res_final})
+                    final_rows.append({"Dia": d_i["n"], "Label": d_i["label"], "Empleado": m['nombre'], "Cargo": m['cargo'], "Grupo": g, "Final": res_final})
 
         df_f = pd.DataFrame(final_rows)
         st.session_state['malla_final'] = df_f
@@ -144,8 +140,8 @@ if df_raw is not None:
                 v = str(val)
                 if 'DESC' in v: estilos.append('background-color: #EF5350; color: white; font-weight: bold')
                 elif 'T3' == v: estilos.append('background-color: #263238; color: white; font-weight: bold')
-                elif 'T1' == v: estilos.append(f'background-color: {colores.get(g_actual)}; color: {textos.get(g_actual)}; border: 1px solid #166534')
-                elif 'T2' == v: estilos.append(f'background-color: {colores.get(g_actual)}; color: {textos.get(g_actual)}; border: 1px solid #0369a1')
+                elif 'T1' in v: estilos.append(f'background-color: {colores.get(g_actual)}; color: {textos.get(g_actual)}; border: 1px solid #166534')
+                elif 'T2' in v: estilos.append(f'background-color: {colores.get(g_actual)}; color: {textos.get(g_actual)}; border: 1px solid #0369a1')
                 else: estilos.append('color: #94a3b8')
             return estilos
 
