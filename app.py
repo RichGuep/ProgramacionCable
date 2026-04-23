@@ -3,7 +3,6 @@ import pandas as pd
 from pulp import *
 import calendar
 from datetime import datetime
-import os
 import io
 
 # --- 1. CONFIGURACIÓN ---
@@ -44,13 +43,16 @@ login_page()
 @st.cache_data
 def load_data():
     try:
+        # Intenta cargar el archivo localmente
         df = pd.read_excel("empleados.xlsx")
         df.columns = df.columns.str.strip().str.lower()
         c_nom = next((c for c in df.columns if 'nom' in c or 'emp' in c), "nombre")
         c_car = next((c for c in df.columns if 'car' in c), "cargo")
         c_des = next((c for c in df.columns if 'des' in c), "descanso")
         return df.rename(columns={c_nom: 'nombre', c_car: 'cargo', c_des: 'descanso_ley'})
-    except: return None
+    except: 
+        st.error("No se encontró el archivo 'empleados.xlsx'. Asegúrate de que esté en la misma carpeta.")
+        return None
 
 df_raw = load_data()
 
@@ -66,7 +68,21 @@ if df_raw is not None:
 
     num_dias = calendar.monthrange(ano_sel, mes_num)[1]
     dias_range = range(1, num_dias + 1)
-    dias_info = [{"n": d, "nombre": ["Lun", "Mar", "Mie", "Jue", "Vie", "Sab", "Dom"][datetime(ano_sel, mes_num, d).weekday()], "semana": datetime(ano_sel, mes_num, d).isocalendar()[1], "label": f"{d} - {['Lun', 'Mar', 'Mie', 'Jue', 'Vie', 'Sab', 'Dom'][datetime(ano_sel, mes_num, d).weekday()]}"} for d in dias_range]
+    
+    # Mapeo de días en español
+    dias_nombres_es = ["Lun", "Mar", "Mie", "Jue", "Vie", "Sab", "Dom"]
+    
+    dias_info = []
+    for d in dias_range:
+        fecha = datetime(ano_sel, mes_num, d)
+        idx_dia = fecha.weekday()
+        dias_info.append({
+            "n": d, 
+            "nombre": dias_nombres_es[idx_dia], 
+            "semana": fecha.isocalendar()[1], 
+            "label": f"{d} - {dias_nombres_es[idx_dia]}"
+        })
+        
     semanas_mes = sorted(list(set([d["semana"] for d in dias_info])))
 
     if st.button("🚀 GENERAR MALLA 2+2"):
@@ -87,7 +103,15 @@ if df_raw is not None:
 
         for e in nombres:
             row = df_f[df_f['nombre'] == e].iloc[0]
-            dia_ley_pref = "Sab" if "sab" in str(row['descanso_ley']).lower() else "Dom"
+            desc_val = str(row['descanso_ley']).lower()
+            
+            # --- MEJORA: Detección de Contrato (Viernes, Sábado o Domingo) ---
+            if "vie" in desc_val:
+                dia_ley_pref = "Vie"
+            elif "sab" in desc_val:
+                dia_ley_pref = "Sab"
+            else:
+                dia_ley_pref = "Dom"
             
             # Máximo 2 semanas de noche
             for s in semanas_mes:
@@ -106,10 +130,10 @@ if df_raw is not None:
                     prob += asig[e][d]["Noche"] + asig[e][d+1]["PM"] <= 1
                     prob += asig[e][d]["PM"] + asig[e][d+1]["AM"] <= 1
             
-            # Restricción de Ley: Obligatorio 2 descansos en su día de ley
+            # Restricción de Ley: Obligatorio 2 descansos en su día de ley (Vie, Sab o Dom)
             d_ley_m = [di["n"] for di in dias_info if di["nombre"] == dia_ley_pref]
             prob += lpSum([asig[e][d][t] for d in d_ley_m for t in LISTA_TURNOS]) <= (len(d_ley_m) - 2)
-            prob += lpSum([asig[e][d][t] for d in dias_range for t in LISTA_TURNOS]) >= 18 # Ajuste carga operativa
+            prob += lpSum([asig[e][d][t] for d in dias_range for t in LISTA_TURNOS]) >= 18 
 
         prob.solve(PULP_CBC_CMD(msg=0))
 
@@ -120,22 +144,34 @@ if df_raw is not None:
                     t_asig = "---"
                     for t in LISTA_TURNOS:
                         if value(asig[e][di["n"]][t]) == 1: t_asig = t
-                    res_list.append({"Dia": di["n"], "Label": di["label"], "Nom_Dia": di["nombre"], "Empleado": e, "Turno": t_asig, "Ley": df_f[df_f['nombre']==e]['descanso_ley'].values[0]})
+                    res_list.append({
+                        "Dia": di["n"], 
+                        "Label": di["label"], 
+                        "Nom_Dia": di["nombre"], 
+                        "Empleado": e, 
+                        "Turno": t_asig, 
+                        "Ley": df_f[df_f['nombre']==e]['descanso_ley'].values[0]
+                    })
             
             df_res = pd.DataFrame(res_list)
             lista_final = []
             for emp, grupo in df_res.groupby("Empleado"):
                 grupo = grupo.sort_values("Dia").copy()
-                dia_l = "Sab" if "sab" in str(grupo['Ley'].iloc[0]).lower() else "Dom"
+                
+                # Detectar día de ley para el post-procesamiento
+                l_val = str(grupo['Ley'].iloc[0]).lower()
+                if "vie" in l_val: dia_l = "Vie"
+                elif "sab" in l_val: dia_l = "Sab"
+                else: dia_l = "Dom"
                 
                 # 1. Aplicar exactamente 2 DESC. LEY
                 idx_libres_ley = grupo[(grupo['Turno'] == '---') & (grupo['Nom_Dia'] == dia_l)].head(2).index
                 grupo.loc[idx_libres_ley, 'Turno'] = 'DESC. LEY'
                 
-                # 2. Aplicar COMPENSATORIOS por trabajar en día de ley
+                # 2. Aplicar COMPENSATORIOS por trabajar en su día de ley
                 dias_trab_ley = grupo[(grupo['Nom_Dia'] == dia_l) & (grupo['Turno'].isin(LISTA_TURNOS))]
                 for _, r_f in dias_trab_ley.iterrows():
-                    hueco = grupo[(grupo['Dia'] > r_f['Dia']) & (grupo['Dia'] <= r_f['Dia'] + 6) & (grupo['Turno'] == '---') & (~grupo['Nom_Dia'].isin(['Sab', 'Dom']))].head(1)
+                    hueco = grupo[(grupo['Dia'] > r_f['Dia']) & (grupo['Dia'] <= r_f['Dia'] + 6) & (grupo['Turno'] == '---') & (~grupo['Nom_Dia'].isin(['Vie','Sab', 'Dom']))].head(1)
                     if not hueco.empty: grupo.loc[hueco.index, 'Turno'] = 'DESC. COMPENSATORIO'
 
                 # 3. Post-Noche
@@ -148,7 +184,7 @@ if df_raw is not None:
                 lista_final.append(grupo)
             
             st.session_state['df_final'] = pd.concat(lista_final)
-            st.success("✅ Malla 2+2 generada con Disponibilidad operativa.")
+            st.success(f"✅ Malla 2+2 generada. Configuración de planta balanceada (Vie/Sab/Dom).")
 
     if 'df_final' in st.session_state:
         df_v = st.session_state['df_final']
@@ -179,9 +215,11 @@ if df_raw is not None:
         with t2:
             audit = []
             for e, g in df_v.groupby("Empleado"):
-                dia_l = "Sab" if "sab" in str(g['Ley'].iloc[0]).lower() else "Dom"
+                l_v = str(g['Ley'].iloc[0]).lower()
+                d_l = "Viernes" if "vie" in l_v else ("Sábado" if "sab" in l_v else "Domingo")
                 audit.append({
-                    "Empleado": e, "Contrato": f"Descansa {dia_l}",
+                    "Empleado": e, 
+                    "Contrato": f"Descansa {d_l}",
                     "Desc. Ley (Objetivo 2)": len(g[g['Turno'] == 'DESC. LEY']),
                     "Compensatorios": len(g[g['Turno'] == 'DESC. COMPENSATORIO']),
                     "Total Descansos": len(g[g['Turno'].str.contains('DESC')]),
