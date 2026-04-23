@@ -5,7 +5,7 @@ import calendar
 from datetime import datetime
 
 # --- 1. CONFIGURACIÓN ---
-st.set_page_config(page_title="MovilGo - Bloques Semanales", layout="wide", page_icon="🗓️")
+st.set_page_config(page_title="MovilGo - Rotación PM-Noche-AM", layout="wide", page_icon="🔄")
 LISTA_TURNOS = ["T1", "T2", "T3"] 
 DIAS_SEMANA = ["Lunes", "Martes", "Miercoles", "Jueves", "Viernes", "Sabado", "Domingo"]
 
@@ -53,7 +53,7 @@ if df_raw is not None:
     num_tcb = len(df_raw[df_raw['cargo'].str.contains('Tecnico B', case=False)])
     num_g = min(num_mas//m_req if m_req>0 else 99, num_tca//ta_req if ta_req>0 else 99, num_tcb//tb_req if tb_req>0 else 99)
 
-    st.title(f"🗓️ Malla por Bloques Semanales: {mes_sel}")
+    st.title(f"🔄 Rotación Semanal Ciclo: T2 ➔ T3 ➔ T1")
     
     with st.expander("📅 Configuración de Descansos", expanded=True):
         n_map, d_map = {}, {}
@@ -84,8 +84,8 @@ if df_raw is not None:
     d_info = [{"n": d, "nom": DIAS_SEMANA[datetime(ano_sel, mes_num, d).weekday()], "sem": datetime(ano_sel, mes_num, d).isocalendar()[1], "label": f"{d:02d}-{DIAS_SEMANA[datetime(ano_sel, mes_num, d).weekday()][:3]}"} for d in range(1, num_dias + 1)]
     semanas = sorted(list(set([d["sem"] for d in d_info])))
 
-    if st.button("⚡ GENERAR MALLA (BLOQUES SEMANALES)"):
-        prob = LpProblem("MovilGo_Semanal", LpMaximize)
+    if st.button("⚡ GENERAR MALLA CON ROTACIÓN PM-T3-AM"):
+        prob = LpProblem("MovilGo_Rotacion_Ciclo", LpMaximize)
         asig = LpVariable.dicts("Asig", (g_finales, semanas, LISTA_TURNOS), cat='Binary')
         
         prob += lpSum([asig[g][s][t] for g in g_finales for s in semanas for t in LISTA_TURNOS])
@@ -97,10 +97,13 @@ if df_raw is not None:
         for g in g_finales:
             for i in range(len(semanas)-1):
                 s1, s2 = semanas[i], semanas[i+1]
-                # BLOQUEOS DE SEGURIDAD
-                prob += asig[g][s1]["T3"] + asig[g][s2]["T1"] <= 1 # No T3 -> T1
-                prob += asig[g][s1]["T3"] + asig[g][s2]["T2"] <= 1 # No T3 -> T2
-                prob += asig[g][s1]["T2"] + asig[g][s2]["T1"] <= 1 # No T2 -> T1
+                # CICLO SOLICITADO: PM (T2) -> Noche (T3) -> AM (T1)
+                prob += asig[g][s1]["T2"] <= asig[g][s2]["T3"]
+                prob += asig[g][s1]["T3"] <= asig[g][s2]["T1"]
+                prob += asig[g][s1]["T1"] <= asig[g][s2]["T2"]
+                
+                # REGLAS DE SEGURIDAD (No cambios bruscos)
+                prob += asig[g][s1]["T3"] + asig[g][s2]["T1"] <= 1 # Bloqueo post-noche inmediato a AM
 
         prob.solve(PULP_CBC_CMD(msg=0))
 
@@ -113,10 +116,8 @@ if df_raw is not None:
         final_rows = []
         for d_i in d_info:
             for g in g_finales:
-                # El turno se mantiene igual para TODA la semana
                 t_f = res_map.get((g, d_i["sem"]), "DISPONIBLE")
                 es_l = (d_i["nom"] == d_map[g])
-                
                 for _, m in df_celulas[df_celulas['grupo'] == g].iterrows():
                     res_final = t_f
                     if es_l: res_final = "DESC. LEY"
