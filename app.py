@@ -88,7 +88,7 @@ if df_raw is not None:
     dict_descansos = {}
     for i, g_name in enumerate(df_celulas['grupo'].unique()):
         with col_g[i]:
-            dict_descansos[g_name] = st.selectbox(f"Ley {g_name}", ["Viernes", "Sabado", "Domingo"], index=i%3)
+            dict_descansos[g_name] = st.selectbox(f"Ley {g_name}", ["Viernes", "Sabado", "Domingo","lunes"], index=i%3)
 
     # --- 6. MOTOR DE OPTIMIZACIÓN SEMANAL ---
     num_dias = calendar.monthrange(ano_sel, mes_num)[1]
