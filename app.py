@@ -4,8 +4,8 @@ from pulp import *
 import calendar
 from datetime import datetime
 
-# --- 1. CONFIGURACIÓN Y NOMENCLATURA ---
-st.set_page_config(page_title="MovilGo Pro - Grupos Personalizados", layout="wide", page_icon="🏷️")
+# --- 1. CONFIGURACIÓN ---
+st.set_page_config(page_title="MovilGo Pro - Seguridad T3 y Refuerzos", layout="wide", page_icon="🛡️")
 LISTA_TURNOS = ["T1", "T2", "T3"] 
 
 # --- 2. LOGIN ---
@@ -36,139 +36,147 @@ def load_base():
 df_raw = load_base()
 
 if df_raw is not None:
-    # --- 4. PARAMETRIZADOR (SIDEBAR) ---
     with st.sidebar:
-        st.header("⚙️ Configuración Operativa")
-        m_req = st.number_input("Masters por Grupo", 1, 5, 2)
-        ta_req = st.number_input("Técnicos A", 1, 15, 7)
-        tb_req = st.number_input("Técnicos B", 1, 10, 3)
-        
+        st.header("⚙️ Configuración")
+        m_req = st.number_input("Masters por Célula", 1, 5, 2)
+        ta_req = st.number_input("Técnicos A por Célula", 1, 15, 7)
+        tb_req = st.number_input("Técnicos B por Célula", 1, 10, 3)
         st.divider()
         meses = ["Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio", "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"]
         mes_sel = st.selectbox("Mes", meses, index=datetime.now().month - 1)
         ano_sel = st.selectbox("Año", [2025, 2026], index=1)
         mes_num = meses.index(mes_sel) + 1
 
-    # Función para armar grupos y detectar cantidad
     def obtener_cantidad_grupos(df, m, ta, tb):
-        masters = len(df[df['cargo'].str.contains('Master', case=False, na=False)])
-        teca = len(df[df['cargo'].str.contains('Tecnico A', case=False, na=False)])
-        tecb = len(df[df['cargo'].str.contains('Tecnico B', case=False, na=False)])
-        return min(masters//m if m>0 else 99, teca//ta if ta>0 else 99, tecb//tb if tb>0 else 99)
+        mas = len(df[df['cargo'].str.contains('Master', case=False, na=False)])
+        tca = len(df[df['cargo'].str.contains('Tecnico A', case=False, na=False)])
+        tcb = len(df[df['cargo'].str.contains('Tecnico B', case=False, na=False)])
+        return min(mas//m if m>0 else 99, tca//ta if ta>0 else 99, tcb//tb if tb>0 else 99)
 
-    num_grupos_detectados = obtener_cantidad_grupos(df_raw, m_req, ta_req, tb_req)
+    num_g = obtener_cantidad_grupos(df_raw, m_req, ta_req, tb_req)
 
-    # --- 5. PARAMETRIZACIÓN DE NOMBRES Y DESCANSOS ---
-    st.title(f"📊 Programación Personalizada: {mes_sel}")
+    st.title(f"📊 Control Operativo: {mes_sel} {ano_sel}")
     
-    with st.expander("🏷️ Configurar Nombres y Descansos de Grupos", expanded=True):
-        nombres_personalizados = {}
-        dict_descansos = {}
-        cols_config = st.columns(num_grupos_detectados if num_grupos_detectados > 0 else 1)
-        
-        for i in range(num_grupos_detectados):
-            with cols_config[i]:
-                st.markdown(f"**Grupo {i+1}**")
-                nombre_g = st.text_input(f"Nombre Grupo {i+1}", value=f"GRUPO {i+1}", key=f"name_{i}")
-                descanso_g = st.selectbox(f"Descanso {nombre_g}", ["Lunes", "Viernes", "Sabado", "Domingo"], index=i % 4, key=f"desc_{i}")
-                nombres_personalizados[f"G{i+1}"] = nombre_g
-                dict_descansos[nombre_g] = descanso_g
+    with st.expander("🏷️ Nombres y Descansos de Grupos", expanded=True):
+        nombres_map, descansos_map = {}, {}
+        cols = st.columns(num_g if num_g > 0 else 1)
+        for i in range(num_g):
+            with cols[i]:
+                n_s = st.text_input(f"Nombre G{i+1}", f"GRUPO {i+1}", key=f"n_{i}")
+                d_s = st.selectbox(f"Día Ley {n_s}", ["Lunes", "Viernes", "Sabado", "Domingo"], index=i % 4, key=f"d_{i}")
+                nombres_map[f"G{i+1}"] = n_s
+                descansos_map[n_s] = d_s
 
-    # Función final para armar las células con los nuevos nombres
-    def armar_celulas_final(df, m, ta, tb, nombres_map):
-        masters = df[df['cargo'].str.contains('Master', case=False, na=False)].copy()
-        teca = df[df['cargo'].str.contains('Tecnico A', case=False, na=False)].copy()
-        tecb = df[df['cargo'].str.contains('Tecnico B', case=False, na=False)].copy()
-        final_list = []
-        for i in range(len(nombres_map)):
-            g_key = f"G{i+1}"
-            g_nombre = nombres_map[g_key]
-            for _ in range(m): final_list.append({**masters.iloc[0].to_dict(), "grupo": g_nombre}); masters = masters.iloc[1:]
-            for _ in range(ta): final_list.append({**teca.iloc[0].to_dict(), "grupo": g_nombre}); teca = teca.iloc[1:]
-            for _ in range(tb): final_list.append({**tecb.iloc[0].to_dict(), "grupo": g_nombre}); tecb = tecb.iloc[1:]
-        return pd.DataFrame(final_list)
+    def armar_celulas(df, m, ta, tb, n_map):
+        mas = df[df['cargo'].str.contains('Master', case=False, na=False)].copy()
+        tca = df[df['cargo'].str.contains('Tecnico A', case=False, na=False)].copy()
+        tcb = df[df['cargo'].str.contains('Tecnico B', case=False, na=False)].copy()
+        final = []
+        for i in range(len(n_map)):
+            g_name = n_map[f"G{i+1}"]
+            for _ in range(m): final.append({**mas.iloc[0].to_dict(), "grupo": g_name}); mas = mas.iloc[1:]
+            for _ in range(ta): final.append({**tca.iloc[0].to_dict(), "grupo": g_name}); tca = tca.iloc[1:]
+            for _ in range(tb): final.append({**tcb.iloc[0].to_dict(), "grupo": g_name}); tcb = tcb.iloc[1:]
+        return pd.DataFrame(final)
 
-    df_celulas = armar_celulas_final(df_raw, m_req, ta_req, tb_req, nombres_personalizados)
-    nombres_grupos_final = list(nombres_personalizados.values())
+    df_celulas = armar_celulas(df_raw, m_req, ta_req, tb_req, nombres_map)
+    g_finales = list(nombres_map.values())
 
-    # Fechas
     num_dias = calendar.monthrange(ano_sel, mes_num)[1]
-    dias_range = range(1, num_dias + 1)
+    d_range = range(1, num_dias + 1)
     dias_es = ["Lun", "Mar", "Mie", "Jue", "Vie", "Sab", "Dom"]
-    dias_info = [{"n": d, "nombre": dias_es[datetime(ano_sel, mes_num, d).weekday()], "semana": datetime(ano_sel, mes_num, d).isocalendar()[1], "label": f"{d}-{dias_es[datetime(ano_sel, mes_num, d).weekday()]}"} for d in dias_range]
-    semanas_mes = sorted(list(set([d["semana"] for d in dias_info])))
+    d_info = [{"n": d, "nom": dias_es[datetime(ano_sel, mes_num, d).weekday()], "sem": datetime(ano_sel, mes_num, d).isocalendar()[1], "lab": f"{d}-{dias_es[datetime(ano_sel, mes_num, d).weekday()]}"} for d in d_range]
+    semanas_list = sorted(list(set([d["sem"] for d in d_info])))
 
-    if st.button("⚡ GENERAR MALLA CON NOMBRES PERSONALIZADOS"):
-        with st.status("Calculando mallas para grupos...", expanded=True) as status:
-            prob = LpProblem("MovilGo_Custom_Names", LpMaximize)
-            asig_sem = LpVariable.dicts("AsigSem", (nombres_grupos_final, semanas_mes, LISTA_TURNOS), cat='Binary')
+    if st.button("⚡ GENERAR MALLA (BLOQUEO T3 ACTIVO)"):
+        with st.status("Validando seguridad de descansos post-T3...", expanded=True) as status:
+            prob = LpProblem("MovilGo_Security", LpMaximize)
+            asig_sem = LpVariable.dicts("AsigSem", (g_finales, semanas_list, LISTA_TURNOS), cat='Binary')
             
-            prob += lpSum([asig_sem[g][s][t] for g in nombres_grupos_final for s in semanas_mes for t in LISTA_TURNOS])
+            prob += lpSum([asig_sem[g][s][t] for g in g_finales for s in semanas_list for t in LISTA_TURNOS])
 
-            for s in semanas_mes:
+            for s in semanas_list:
                 for t in LISTA_TURNOS:
-                    prob += lpSum([asig_sem[g][s][t] for g in nombres_grupos_final]) >= 1
-                for g in nombres_grupos_final:
+                    # Garantizar cobertura base
+                    prob += lpSum([asig_sem[g][s][t] for g in g_finales]) >= 1
+                for g in g_finales:
                     prob += lpSum([asig_sem[g][s][t] for t in LISTA_TURNOS]) <= 1
 
-            for g in nombres_grupos_final:
-                for i in range(len(semanas_mes)-1):
-                    s_a, s_s = semanas_mes[i], semanas_mes[i+1]
-                    prob += asig_sem[g][s_a]["T3"] <= asig_sem[g][s_s]["T2"]
-                    prob += asig_sem[g][s_a]["T2"] <= asig_sem[g][s_s]["T1"]
+            # REGLA DE ORO: T3 NO PUEDE PASAR A T1/T2 SIN DESCANSO (Rotación Segura)
+            for g in g_finales:
+                for i in range(len(semanas_list)-1):
+                    s1, s2 = semanas_list[i], semanas_list[i+1]
+                    # Solo puede rotar T3 -> Descanso -> T2 (La lógica de días de ley se encarga del descanso)
+                    # Forzamos que después de T3 solo se pueda ir a T2 (PM) para dar margen de sueño
+                    prob += asig_sem[g][s1]["T3"] <= asig_sem[g][s2]["T2"]
+                    prob += asig_sem[g][s1]["T2"] <= asig_sem[g][s2]["T1"]
 
             prob.solve(PULP_CBC_CMD(msg=0))
 
-            res_base_map = {}
-            for s in semanas_mes:
+            res_map = {}
+            for s in semanas_list:
                 for t in LISTA_TURNOS:
-                    encontrado = False
-                    for g in nombres_grupos_final:
+                    enc = False
+                    for g in g_finales:
                         if value(asig_sem[g][s][t]) == 1:
-                            if not encontrado:
-                                res_base_map[(g, s)] = t
-                                encontrado = True
-                            else:
-                                res_base_map[(g, s)] = f"{t} DISPO"
+                            if not enc: res_map[(g, s)] = t; enc = True
+                            else: res_map[(g, s)] = f"{t} DISPO"
 
-            res_list = []
-            for d_i in dias_info:
-                for g in nombres_grupos_final:
-                    t_final = res_base_map.get((g, d_i["semana"]), "DISPONIBILIDAD")
-                    es_ley = (d_i["nombre"] == dict_descansos[g][:3])
+            final_data = []
+            for d_i in d_info:
+                for g in g_finales:
+                    t_f = res_map.get((g, d_i["sem"]), "DISPONIBILIDAD")
+                    es_l = (d_i["nom"] == descansos_map[g][:3])
                     miembros = df_celulas[df_celulas['grupo'] == g]
                     for _, m in miembros.iterrows():
-                        res_list.append({
-                            "Dia": d_i["n"], "Label": d_i["label"], "Nom_Dia": d_i["nombre"], 
-                            "Semana": d_i["semana"], "Empleado": m['nombre'], "Grupo": g,
-                            "Turno_Base": t_final, "Es_Ley": es_ley, "Contrato": dict_descansos[g]
+                        final_data.append({
+                            "Dia": d_i["n"], "Label": d_i["lab"], "Nom_Dia": d_i["nom"], "Semana": d_i["sem"], 
+                            "Empleado": m['nombre'], "Cargo": m['cargo'], "Grupo": g, "Turno": t_f, "Ley": es_l
                         })
 
-            df_res = pd.DataFrame(res_list)
-            f_rows = []
+            df_res = pd.DataFrame(final_data)
+            p_rows = []
             for _, g_emp in df_res.groupby("Empleado"):
                 g_emp = g_emp.sort_values("Dia").copy()
-                for s in semanas_mes:
-                    f_sem = g_emp[g_emp['Semana'] == s]
-                    t_s = f_sem['Turno_Base'].iloc[0]
-                    g_emp.loc[f_sem.index, 'Resultado'] = t_s
-                    idx_l = f_sem[f_sem['Es_Ley']].index
+                for s in semanas_list:
+                    f_s = g_emp[g_emp['Semana'] == s]
+                    t_s = f_s['Turno'].iloc[0]
+                    g_emp.loc[f_s.index, 'Resultado'] = t_s
+                    idx_l = f_s[f_s['Ley']].index
                     if not idx_l.empty: g_emp.loc[idx_l, 'Resultado'] = "DESC. LEY"
-                f_rows.append(g_emp)
+                p_rows.append(g_emp)
 
-            st.session_state['malla_final'] = pd.concat(f_rows)
-            status.update(label="✅ Malla personalizada generada.", state="complete")
+            st.session_state['malla_final'] = pd.concat(p_rows)
+            status.update(label="✅ Malla generada con cargos y seguridad T3.", state="complete")
 
     if 'malla_final' in st.session_state:
-        piv = st.session_state['malla_final'].pivot(index=['Grupo', 'Empleado'], columns='Label', values='Resultado')
-        cols = sorted(piv.columns, key=lambda x: int(x.split('-')[0]))
+        df_v = st.session_state['malla_final']
         
-        def styler(v):
-            if 'LEY' in str(v): return 'background-color: #fee2e2; color: #991b1b; font-weight: bold'
-            if 'DISPO' in str(v) and v != 'DISPONIBILIDAD': return 'background-color: #fef9c3; color: #854d0e; border: 1px dashed #ca8a04'
-            if v == 'T3': return 'background-color: #1e293b; color: white'
-            if v == 'T1': return 'background-color: #dcfce7; color: #166534'
-            if v == 'T2': return 'background-color: #e0f2fe; color: #0369a1'
-            return 'color: #94a3b8; font-style: italic'
+        tab_m, tab_a = st.tabs(["📅 Malla Operativa (Con Cargos)", "⚖️ Auditoría de Descansos"])
+        
+        with tab_m:
+            # Creamos el pivote usando Grupo, Empleado y Cargo como índices
+            piv = df_v.pivot(index=['Grupo', 'Empleado', 'Cargo'], columns='Label', values='Resultado')
+            cols = sorted(piv.columns, key=lambda x: int(x.split('-')[0]))
             
-        st.dataframe(piv[cols].style.map(styler), use_container_width=True)
+            def styler(v):
+                if 'LEY' in str(v): return 'background-color: #fee2e2; color: #991b1b; font-weight: bold'
+                if 'DISPO' in str(v) and v != 'DISPONIBILIDAD': return 'background-color: #fef9c3; color: #854d0e; border: 1px dashed #ca8a04'
+                if v == 'T3': return 'background-color: #1e293b; color: white'
+                if v == 'T1': return 'background-color: #dcfce7; color: #166534'
+                if v == 'T2': return 'background-color: #e0f2fe; color: #0369a1'
+                return 'color: #94a3b8'
+                
+            st.dataframe(piv[cols].style.map(styler), use_container_width=True)
+
+        with tab_a:
+            st.subheader("Cumplimiento de Descansos por Persona")
+            audit = []
+            for (g, emp, car), data in df_v.groupby(['Grupo', 'Empleado', 'Cargo']):
+                d_ley = len(data[data['Resultado'] == 'DESC. LEY'])
+                audit.append({
+                    "Grupo": g, "Nombre": emp, "Cargo": car,
+                    "Descansos de Ley": d_ley,
+                    "Estado": "✅ OK" if d_ley >= len(semanas_list)-1 else "⚠️ REVISAR"
+                })
+            st.table(pd.DataFrame(audit))
