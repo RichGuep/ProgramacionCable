@@ -4,9 +4,10 @@ from pulp import *
 import calendar
 from datetime import datetime
 import io
+import math
 
 # --- 1. CONFIGURACIÓN ---
-st.set_page_config(page_title="MovilGo Pro - 100% Cumplimiento", layout="wide", page_icon="⚖️")
+st.set_page_config(page_title="MovilGo Pro - Células Operativas", layout="wide", page_icon="👥")
 LISTA_TURNOS = ["AM", "PM", "Noche"]
 
 # --- 2. ESTILOS ---
@@ -14,8 +15,8 @@ st.markdown("""
     <style>
     @import url('https://fonts.cdnfonts.com/css/century-gothic');
     html, body, [class*="st-"], div, span, p, text { font-family: 'Century Gothic', sans-serif !important; }
-    .stApp { background-color: #f8fafc; }
-    .metric-card { background-color: white; padding: 15px; border-radius: 10px; border-top: 5px solid #1e293b; text-align: center; }
+    .stApp { background-color: #f1f5f9; }
+    .group-card { background-color: white; padding: 15px; border-radius: 8px; border-left: 5px solid #3b82f6; margin-bottom: 10px; }
     </style>
     """, unsafe_allow_html=True)
 
@@ -25,7 +26,7 @@ def login_page():
     if not st.session_state['auth']:
         _, col_login, _ = st.columns([1, 1.8, 1])
         with col_login:
-            st.markdown("<h1 style='text-align:center;'>MovilGo</h1>", unsafe_allow_html=True)
+            st.markdown("<h1 style='text-align:center;'>MovilGo Grupos</h1>", unsafe_allow_html=True)
             with st.form("LoginForm"):
                 user = st.text_input("Usuario")
                 pwd = st.text_input("Contraseña", type="password")
@@ -37,151 +38,156 @@ def login_page():
 
 login_page()
 
+# --- 4. CARGA Y CREACIÓN DE GRUPOS ---
 @st.cache_data
-def load_data():
+def load_and_group():
     try:
         df = pd.read_excel("empleados.xlsx")
         df.columns = df.columns.str.strip().str.lower()
+        # Estandarizar nombres de columnas
         c_nom = next((c for c in df.columns if 'nom' in c or 'emp' in c), "nombre")
         c_car = next((c for c in df.columns if 'car' in c), "cargo")
-        c_des = next((c for c in df.columns if 'des' in c), "descanso")
-        return df.rename(columns={c_nom: 'nombre', c_car: 'cargo', c_des: 'descanso_ley'})
-    except: return None
+        df = df.rename(columns={c_nom: 'nombre', c_car: 'cargo'})
+        
+        # Filtrar por cargos necesarios para las células
+        masters = df[df['cargo'].str.contains('Master', case=False, na=False)].copy()
+        teca = df[df['cargo'].str.contains('Tecnico A', case=False, na=False)].copy()
+        tecb = df[df['cargo'].str.contains('Tecnico B', case=False, na=False)].copy()
+        
+        # Calcular cuántos grupos completos podemos armar
+        num_grupos = min(len(masters)//2, len(teca)//7, len(tecb)//3)
+        
+        grupos_dict = []
+        for i in range(num_grupos):
+            g_id = f"Célula {i+1}"
+            # Asignar día de ley rotativo para que los grupos se cubran entre sí
+            dia_ley = ["Viernes", "Sabado", "Domingo"][i % 3]
+            
+            # Extraer integrantes
+            miembros = []
+            for _ in range(2): miembros.append(masters.pop(masters.index[0]))
+            for _ in range(7): miembros.append(teca.pop(teca.index[0]))
+            for _ in range(3): miembros.append(tecb.pop(tecb.index[0]))
+            
+            for m in miembros:
+                grupos_dict.append({
+                    "nombre": m['nombre'],
+                    "cargo": m['cargo'],
+                    "grupo": g_id,
+                    "descanso_ley": dia_ley
+                })
+        
+        return pd.DataFrame(grupos_dict), num_grupos
+    except Exception as e:
+        st.error(f"Error al procesar grupos: {e}")
+        return None, 0
 
-df_raw = load_data()
+df_grupos, total_g = load_and_group()
 
-if df_raw is not None:
+if df_grupos is not None:
     with st.sidebar:
-        st.header("⚙️ Parámetros")
+        st.header("⚙️ Configuración de Malla")
         ano_sel = st.selectbox("Año", [2025, 2026], index=1)
         meses = ["Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio", "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"]
         mes_sel = st.selectbox("Mes", meses, index=datetime.now().month - 1)
         mes_num = meses.index(mes_sel) + 1
-        cargo_sel = st.selectbox("Cargo", sorted(df_raw['cargo'].unique()))
-        cupo_manual = st.number_input("Cupo por Turno", 1, 20, 2)
-        peso_estabilidad = st.select_slider("Estabilidad de Bloques", options=[50, 100, 150, 200, 300], value=150)
+        
+        st.metric("Total Células Armadas", total_g)
+        st.write("*(Cada célula: 2 Master, 7 Tec A, 3 Tec B)*")
 
+    # Fechas
     num_dias = calendar.monthrange(ano_sel, mes_num)[1]
     dias_range = range(1, num_dias + 1)
     dias_es = ["Lun", "Mar", "Mie", "Jue", "Vie", "Sab", "Dom"]
     dias_info = [{"n": d, "nombre": dias_es[datetime(ano_sel, mes_num, d).weekday()], "semana": datetime(ano_sel, mes_num, d).isocalendar()[1], "label": f"{d}-{dias_es[datetime(ano_sel, mes_num, d).weekday()]}"} for d in dias_range]
     semanas_mes = sorted(list(set([d["semana"] for d in dias_info])))
 
-    if st.button(f"🚀 GENERAR MALLA 100% LEGAL"):
-        with st.status("Garantizando 1 descanso por semana...", expanded=True) as status:
-            df_f = df_raw[df_raw['cargo'] == cargo_sel].copy()
-            nombres = df_f['nombre'].tolist()
+    if st.button("🚀 GENERAR MALLA POR CÉLULAS"):
+        with st.status("Optimizando rotación de grupos completos...", expanded=True) as status:
+            nombres_g = df_grupos['grupo'].unique().tolist()
             
-            prob = LpProblem("Malla_Garantizada", LpMaximize)
-            asig = LpVariable.dicts("Asig", (nombres, dias_range, LISTA_TURNOS), cat='Binary')
-            mantiene = LpVariable.dicts("Mantiene", (nombres, range(2, num_dias + 1), LISTA_TURNOS), cat='Binary')
+            prob = LpProblem("Malla_Grupos", LpMaximize)
+            asig = LpVariable.dicts("AsigG", (nombres_g, dias_range, LISTA_TURNOS), cat='Binary')
             
-            # OBJETIVO: Maximizar turnos pero con peso fuerte en estabilidad
-            prob += lpSum([asig[e][d][t] for e in nombres for d in dias_range for t in LISTA_TURNOS]) + \
-                    lpSum([mantiene[e][d][t] for e in nombres for d in range(2, num_dias + 1) for t in LISTA_TURNOS]) * peso_estabilidad
+            # Maximizar asignación
+            prob += lpSum([asig[g][d][t] for g in nombres_g for d in dias_range for t in LISTA_TURNOS])
 
             for d in dias_range:
                 for t in LISTA_TURNOS:
-                    prob += lpSum([asig[e][d][t] for e in nombres]) <= cupo_manual
+                    # Control de cobertura: cuántas células por turno
+                    prob += lpSum([asig[g][d][t] for g in nombres_g]) <= math.ceil(total_g / 3)
 
-            for e in nombres:
-                row = df_f[df_f['nombre'] == e].iloc[0]
-                dl_val = str(row['descanso_ley']).lower()
-                dia_l_pref = "Vie" if "vie" in dl_val else ("Sab" if "sab" in dl_val else "Dom")
-
+            for g in nombres_g:
+                dia_l_pref = df_grupos[df_grupos['grupo'] == g]['descanso_ley'].iloc[0][:3] # Vie, Sab, Dom
+                
                 for d in dias_range:
-                    prob += lpSum([asig[e][d][t] for t in LISTA_TURNOS]) <= 1
-                    if d > 1:
-                        for t in LISTA_TURNOS:
-                            prob += mantiene[e][d][t] <= asig[e][d][t]
-                            prob += mantiene[e][d][t] <= asig[e][d-1][t]
-                    
+                    prob += lpSum([asig[g][d][t] for t in LISTA_TURNOS]) <= 1
                     if d < num_dias:
-                        prob += asig[e][d]["PM"] + asig[e][d+1]["AM"] <= 1
-                        prob += asig[e][d]["Noche"] + asig[e][d+1]["AM"] <= 1
-                        prob += asig[e][d]["Noche"] + asig[e][d+1]["PM"] <= 1
+                        prob += asig[g][d]["Noche"] + asig[g][d+1]["AM"] <= 1
+                
+                # Garantizar que el grupo descanse al menos 2 veces su día de ley
+                d_ley_g = [di["n"] for di in dias_info if di["nombre"] == dia_l_pref]
+                prob += lpSum([asig[g][d][t] for d in d_ley_g for t in LISTA_TURNOS]) <= (len(d_ley_g) - 2)
 
-                # REGLA MAESTRA: Forzar un descanso mínimo por cada semana del mes
-                for sem in semanas_mes:
-                    dias_de_la_semana = [di["n"] for di in dias_info if di["semana"] == sem]
-                    # La suma de turnos en la semana debe ser <= (días de la semana - 1)
-                    prob += lpSum([asig[e][d][t] for d in dias_de_la_semana for t in LISTA_TURNOS]) <= (len(dias_de_la_semana) - 1)
-
-            prob.solve(PULP_CBC_CMD(msg=0, timeLimit=45, gapRel=0.05))
+            prob.solve(PULP_CBC_CMD(msg=0, timeLimit=30))
 
             if LpStatus[prob.status] in ['Optimal', 'Not Solved']:
-                res_list = []
+                # Mapear resultados de grupos a empleados individuales
+                res_final = []
                 for di in dias_info:
-                    for e in nombres:
-                        t_asig = "---"
+                    for g in nombres_g:
+                        t_grupo = "---"
                         for t in LISTA_TURNOS:
-                            if value(asig[e][di["n"]][t]) == 1: t_asig = t
-                        res_list.append({"Dia": di["n"], "Label": di["label"], "Nom_Dia": di["nombre"], "Semana": di["semana"], "Empleado": e, "Turno": t_asig, "Contrato": df_f[df_f['nombre']==e]['descanso_ley'].values[0]})
-                
-                df_res = pd.DataFrame(res_list)
-                lista_final = []
-                
-                for emp, grupo in df_res.groupby("Empleado"):
-                    grupo = grupo.sort_values("Dia").copy()
-                    lv = str(grupo['Contrato'].iloc[0]).lower()
-                    dl = "Vie" if "vie" in lv else ("Sab" if "sab" in lv else "Dom")
-                    
-                    # 1. Asignación de Descansos Semanales
-                    for sem in semanas_mes:
-                        f_sem = grupo[grupo['Semana'] == sem]
-                        # Buscar si ya hay un hueco (---)
-                        hueco = f_sem[f_sem['Turno'] == '---']
+                            if value(asig[g][di["n"]][t]) == 1: t_grupo = t
                         
-                        if not hueco.empty:
-                            # Si el hueco está en su día de contrato, es DESC. LEY
-                            if dl in hueco['Nom_Dia'].values:
-                                idx = hueco[hueco['Nom_Dia'] == dl].index
-                                grupo.loc[idx, 'Turno'] = 'DESC. LEY'
-                            else:
-                                # Si el hueco está en otro día, es COMPENSATORIO
-                                grupo.loc[hueco.head(1).index, 'Turno'] = 'DESC. COMPENSATORIO'
-                    
-                    # 2. Post-Noche
-                    for i in range(len(grupo)-1):
-                        if grupo.iloc[i]['Turno'] == 'Noche' and 'DESC' not in str(grupo.iloc[i+1]['Turno']):
-                            if grupo.iloc[i+1]['Turno'] == '---':
-                                grupo.iloc[i+1, grupo.columns.get_loc('Turno')] = 'DESC. POST-NOCHE'
-
-                    grupo.loc[grupo['Turno'] == '---', 'Turno'] = 'DISPONIBILIDAD'
-                    lista_final.append(grupo)
+                        # Asignar este turno a todos los miembros del grupo
+                        miembros = df_grupos[df_grupos['grupo'] == g]
+                        for _, m in miembros.iterrows():
+                            res_final.append({
+                                "Dia": di["n"], "Label": di["label"], "Nom_Dia": di["nombre"], 
+                                "Semana": di["semana"], "Empleado": m['nombre'], "Grupo": g,
+                                "Cargo": m['cargo'], "Turno": t_grupo, "Contrato": m['descanso_ley']
+                            })
                 
-                st.session_state['df_final'] = pd.concat(lista_final)
-                status.update(label="✅ Malla generada: 1 descanso por semana garantizado.", state="complete", expanded=False)
+                df_res = pd.DataFrame(res_final)
+                lista_procesada = []
+                for emp, grupo_emp in df_res.groupby("Empleado"):
+                    grupo_emp = grupo_emp.sort_values("Dia").copy()
+                    dl = grupo_emp['Contrato'].iloc[0][:3]
+                    
+                    # Semanas a compensar
+                    semanas_t = []
+                    for s in semanas_mes:
+                        dia_l = grupo_emp[(grupo_emp['Semana'] == s) & (grupo_emp['Nom_Dia'] == dl)]
+                        if not dia_l.empty:
+                            if dia_l['Turno'].iloc[0] in LISTA_TURNOS:
+                                semanas_t.append(s)
+                            else:
+                                grupo_emp.loc[dia_l.index, 'Turno'] = 'DESC. LEY'
+                    
+                    # Pagar compensatorios
+                    for st_deuda in semanas_t:
+                        idx_c = grupo_emp[(grupo_emp['Semana'] == st_deuda + 1) & (grupo_emp['Turno'] == '---') & (~grupo_emp['Nom_Dia'].isin(['Vie','Sab','Dom']))].head(1).index
+                        if not idx_c.empty: grupo_emp.loc[idx_c, 'Turno'] = 'DESC. COMPENSATORIO'
+                    
+                    grupo_emp.loc[grupo_emp['Turno'] == '---', 'Turno'] = 'DISPONIBILIDAD'
+                    lista_procesada.append(grupo_emp)
+
+                st.session_state['df_final'] = pd.concat(lista_procesada)
+                status.update(label="✅ Malla por Células Generada", state="complete", expanded=False)
 
     if 'df_final' in st.session_state:
         df_v = st.session_state['df_final']
-        tab_m, tab_audit = st.tabs(["📅 Malla Operativa", "⚖️ Auditoría Legal"])
         
-        with tab_m:
-            def style_v(v):
-                if 'LEY' in v: return 'background-color: #fee2e2; color: #991b1b; font-weight: bold'
-                if 'COMPENSATORIO' in v: return 'background-color: #fef9c3; color: #854d0e; font-weight: bold'
-                if 'POST-NOCHE' in v: return 'background-color: #dcfce7; color: #166534; font-weight: bold'
-                if v == 'Noche': return 'background-color: #1e293b; color: white'
-                return ''
-            
-            m_piv = df_v.pivot(index='Empleado', columns='Label', values='Turno')
-            st.dataframe(m_piv[sorted(m_piv.columns, key=lambda x: int(x.split('-')[0]))].style.map(style_v), use_container_width=True)
+        t1, t2 = st.tabs(["📅 Malla Individual", "👥 Resumen de Células"])
+        
+        with t1:
+            m_piv = df_v.pivot(index=['Grupo', 'Empleado'], columns='Label', values='Turno')
+            st.dataframe(m_piv.style.applymap(lambda v: 'background-color: #fee2e2' if 'LEY' in str(v) else ('background-color: #fef9c3' if 'COMP' in str(v) else '')), use_container_width=True)
 
-        with tab_audit:
-            audit = []
-            for e, g in df_v.groupby("Empleado"):
-                d_ley = len(g[g['Turno'] == 'DESC. LEY'])
-                d_comp = len(g[g['Turno'] == 'DESC. COMPENSATORIO'])
-                total = d_ley + d_comp
-                # Meta: tantas semanas como tenga el mes
-                audit.append({
-                    "Empleado": e, 
-                    "Contrato": g['Contrato'].iloc[0], 
-                    "Descansos Ley": d_ley, 
-                    "Compensatorios": d_comp,
-                    "Total Descansos": total,
-                    "Semanas del Mes": len(semanas_mes),
-                    "Estado": "✅ CUMPLE" if total >= len(semanas_mes) else "⚠️ REVISAR CUPOS"
-                })
-            st.table(pd.DataFrame(audit))
+        with t2:
+            st.markdown("### Configuración de Grupos")
+            for g_id, data in df_grupos.groupby("grupo"):
+                with st.container():
+                    st.markdown(f"<div class='group-card'><b>{g_id}</b> - Descanso Ley: {data['descanso_ley'].iloc[0]}<br>"
+                                f"Integrantes: {len(data)} (2 Master, 7 Tec A, 3 Tec B)</div>", unsafe_allow_html=True)
