@@ -5,8 +5,7 @@ import calendar
 from datetime import datetime
 
 # --- 1. CONFIGURACIÓN Y NOMENCLATURA ---
-st.set_page_config(page_title="MovilGo Pro - Control T1/T2/T3", layout="wide", page_icon="⚙️")
-# Nomenclatura solicitada
+st.set_page_config(page_title="MovilGo Pro - Gestión de Refuerzos", layout="wide", page_icon="⚙️")
 LISTA_TURNOS = ["T1", "T2", "T3"] 
 
 # --- 2. LOGIN ---
@@ -63,7 +62,7 @@ if df_raw is not None:
 
     df_celulas, total_g = armar_celulas(df_raw, m_req, ta_req, tb_req)
 
-    st.title(f"📊 Control de Turnos T1-T2-T3: {mes_sel}")
+    st.title(f"📊 Programación con Refuerzos (DISPO): {mes_sel}")
     
     dict_descansos = {}
     nombres_grupos = df_celulas['grupo'].unique()
@@ -78,22 +77,22 @@ if df_raw is not None:
     dias_info = [{"n": d, "nombre": dias_es[datetime(ano_sel, mes_num, d).weekday()], "semana": datetime(ano_sel, mes_num, d).isocalendar()[1], "label": f"{d}-{dias_es[datetime(ano_sel, mes_num, d).weekday()]}"} for d in dias_range]
     semanas_mes = sorted(list(set([d["semana"] for d in dias_info])))
 
-    if st.button("⚡ GENERAR MALLA T1-T2-T3"):
-        with st.status("Asignando turnos y configurando respaldos...", expanded=True) as status:
-            prob = LpProblem("MovilGo_T_Codes", LpMaximize)
+    if st.button("⚡ GENERAR MALLA CON DISTINCIÓN DISPO"):
+        with st.status("Identificando grupos de refuerzo...", expanded=True) as status:
+            prob = LpProblem("MovilGo_Dispo_Style", LpMaximize)
             asig_sem = LpVariable.dicts("AsigSem", (nombres_grupos, semanas_mes, LISTA_TURNOS), cat='Binary')
             
-            # Objetivo: Cobertura máxima
             prob += lpSum([asig_sem[g][s][t] for g in nombres_grupos for s in semanas_mes for t in LISTA_TURNOS])
+
+            # Seguimiento de qué grupos son "Base" para cada turno/semana
+            base_turno = {} 
 
             for s in semanas_mes:
                 for t in LISTA_TURNOS:
-                    # Garantizar al menos 1 grupo por turno (T1, T2, T3)
                     prob += lpSum([asig_sem[g][s][t] for g in nombres_grupos]) >= 1
                 for g in nombres_grupos:
                     prob += lpSum([asig_sem[g][s][t] for t in LISTA_TURNOS]) <= 1
 
-            # Rotación: T3 (Noche) -> T2 (PM) -> T1 (AM)
             for g in nombres_grupos:
                 for i in range(len(semanas_mes)-1):
                     s_a = semanas_mes[i]; s_s = semanas_mes[i+1]
@@ -102,20 +101,29 @@ if df_raw is not None:
 
             prob.solve(PULP_CBC_CMD(msg=0))
 
+            # Identificar el primer grupo asignado como el "Base" para marcar a los demás como DISPO
+            res_base_map = {}
+            for s in semanas_mes:
+                for t in LISTA_TURNOS:
+                    encontrado = False
+                    for g in nombres_grupos:
+                        if value(asig_sem[g][s][t]) == 1 and not encontrado:
+                            res_base_map[(g, s)] = t
+                            encontrado = True
+                        elif value(asig_sem[g][s][t]) == 1 and encontrado:
+                            res_base_map[(g, s)] = f"{t} DISPO"
+
             res_list = []
             for d_i in dias_info:
                 for g in nombres_grupos:
-                    t_sem = "DISPONIBILIDAD"
-                    for t in LISTA_TURNOS:
-                        if value(asig_sem[g][d_i["semana"]][t]) == 1: t_sem = t
-                    
+                    t_final = res_base_map.get((g, d_i["semana"]), "DISPONIBILIDAD")
                     es_ley = (d_i["nombre"] == dict_descansos[g][:3])
                     miembros = df_celulas[df_celulas['grupo'] == g]
                     for _, m in miembros.iterrows():
                         res_list.append({
                             "Dia": d_i["n"], "Label": d_i["label"], "Nom_Dia": d_i["nombre"], 
                             "Semana": d_i["semana"], "Empleado": m['nombre'], "Grupo": g,
-                            "Turno_Base": t_sem, "Es_Ley": es_ley, "Contrato": dict_descansos[g]
+                            "Turno_Base": t_final, "Es_Ley": es_ley, "Contrato": dict_descansos[g]
                         })
 
             df_res = pd.DataFrame(res_list)
@@ -131,32 +139,30 @@ if df_raw is not None:
                 f_rows.append(g_emp)
 
             st.session_state['malla_final'] = pd.concat(f_rows)
-            status.update(label="✅ Malla T1-T2-T3 generada.", state="complete")
+            status.update(label="✅ Malla generada con etiquetas DISPO.", state="complete")
 
     if 'malla_final' in st.session_state:
-        tab1, tab2, tab3 = st.tabs(["📅 Malla Operativa", "🛡️ Auditoría de Cupos", "📊 Resumen Grupal"])
+        tab1, tab2 = st.tabs(["📅 Malla T1-T2-T3 DISPO", "🛡️ Auditoría de Refuerzos"])
 
         with tab1:
             piv = st.session_state['malla_final'].pivot(index=['Grupo', 'Empleado'], columns='Label', values='Resultado')
             cols = sorted(piv.columns, key=lambda x: int(x.split('-')[0]))
+            
             def styler(v):
                 if 'LEY' in str(v): return 'background-color: #fee2e2; color: #991b1b; font-weight: bold'
-                if v == 'T3': return 'background-color: #1e293b; color: white' # Noche
-                if v == 'T1': return 'background-color: #dcfce7; color: #166534' # AM
-                if v == 'T2': return 'background-color: #e0f2fe; color: #0369a1' # PM
-                return 'color: #94a3b8'
+                if 'DISPO' in str(v) and v != 'DISPONIBILIDAD': return 'background-color: #fef9c3; color: #854d0e; border: 1px dashed #ca8a04' # Amarillo Refuerzo
+                if v == 'T3': return 'background-color: #1e293b; color: white'
+                if v == 'T1': return 'background-color: #dcfce7; color: #166534'
+                if v == 'T2': return 'background-color: #e0f2fe; color: #0369a1'
+                return 'color: #94a3b8; font-style: italic'
+                
             st.dataframe(piv[cols].style.map(styler), use_container_width=True)
 
         with tab2:
-            st.subheader("Validación de Cobertura Diaria")
-            cobertura = st.session_state['malla_final'][~st.session_state['malla_final']['Resultado'].str.contains('DESC')].groupby(['Label', 'Resultado'])['Grupo'].nunique().unstack().fillna(0)
-            st.dataframe(cobertura, use_container_width=True)
-
-        with tab3:
-            audit = []
-            for (grupo, emp), data in st.session_state['malla_final'].groupby(['Grupo', 'Empleado']):
-                audit.append({
-                    "Grupo": grupo, "Empleado": emp, "Turnos": " -> ".join(data.groupby('Semana')['Turno_Base'].first().tolist()),
-                    "Descansos": len(data[data['Resultado'].str.contains('DESC')])
-                })
-            st.table(pd.DataFrame(audit))
+            st.subheader("Análisis de Grupos de Apoyo")
+            refuerzos = st.session_state['malla_final'][st.session_state['malla_final']['Resultado'].str.contains('DISPO') & (st.session_state['malla_final']['Resultado'] != 'DISPONIBILIDAD')]
+            if not refuerzos.empty:
+                st.write("Los siguientes grupos están apoyando turnos fuera de su asignación base:")
+                st.table(refuerzos[['Grupo', 'Empleado', 'Semana', 'Resultado']].drop_duplicates())
+            else:
+                st.info("No hay refuerzos asignados; todos los grupos están en su turno base o disponibilidad pura.")
