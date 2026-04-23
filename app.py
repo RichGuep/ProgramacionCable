@@ -5,7 +5,7 @@ import calendar
 from datetime import datetime
 
 # --- 1. CONFIGURACIÓN ---
-st.set_page_config(page_title="MovilGo - Gestión Mensual de Disponibilidad", layout="wide", page_icon="⚙️")
+st.set_page_config(page_title="MovilGo - Disponibilidad Total Segura", layout="wide", page_icon="⚙️")
 LISTA_TURNOS = ["T1", "T2", "T3"] 
 DIAS_SEMANA = ["Lunes", "Martes", "Miercoles", "Jueves", "Viernes", "Sabado", "Domingo"]
 
@@ -48,9 +48,9 @@ if df_raw is not None:
         ano_sel = st.selectbox("Año", [2025, 2026], index=1)
         mes_num = meses.index(mes_sel) + 1
 
-    num_g = 4 # Forzamos 4 grupos para esta lógica
-    st.title(f"🗓️ Planificación: {mes_sel} {ano_sel}")
-    st.info("💡 Grupo de Disponibilidad: No hace T3 y no salta de T2 a T1 sin descanso.")
+    num_g = 4 
+    st.title(f"🗓️ Planificación con Disponibilidad Segura: {mes_sel}")
+    st.info("💡 El grupo disponible ahora cubre T3, con bloqueos de seguridad T3 ➔ T2/T1 y T2 ➔ T1.")
     
     with st.expander("📅 Configuración de Grupos", expanded=True):
         n_map, d_map, t_map = {}, {}, {}
@@ -60,7 +60,6 @@ if df_raw is not None:
                 g_id = f"G{i+1}"
                 n_s = st.text_input(f"Nombre {g_id}", f"GRUPO {i+1}", key=f"n_{i}")
                 d_s = st.selectbox(f"Descanso", DIAS_SEMANA, index=i % 7, key=f"d_{i}")
-                # Elegir quién es el grupo de disponibilidad este mes
                 es_disp = st.checkbox("¿Es Disponibilidad?", value=(i==3), key=f"t_{i}")
                 n_map[g_id] = n_s
                 d_map[n_s] = d_s
@@ -85,7 +84,7 @@ if df_raw is not None:
     semanas = sorted(list(set([d["sem"] for d in d_info])))
 
     if st.button("⚡ GENERAR MALLA OPTIMIZADA"):
-        # 1. OPTIMIZACIÓN DE TURNOS BASE (GRUPOS QUE ROTAN)
+        # 1. OPTIMIZACIÓN DE TURNOS BASE
         g_rotan = [g for g in g_finales if t_map[g] == "ROTA"]
         prob = LpProblem("MovilGo_Rota", LpMinimize)
         asig = LpVariable.dicts("Asig", (g_rotan, semanas, LISTA_TURNOS), cat='Binary')
@@ -98,23 +97,23 @@ if df_raw is not None:
         for g in g_rotan:
             for i in range(len(semanas)-1):
                 s1, s2 = semanas[i], semanas[i+1]
-                prob += asig[g][s1]["T2"] <= asig[g][s2]["T3"] # PM -> Noche
-                prob += asig[g][s1]["T3"] <= asig[g][s2]["T1"] # Noche -> AM
-                prob += asig[g][s1]["T1"] <= asig[g][s2]["T2"] # AM -> PM
+                prob += asig[g][s1]["T2"] <= asig[g][s2]["T3"] 
+                prob += asig[g][s1]["T3"] <= asig[g][s2]["T1"] 
+                prob += asig[g][s1]["T1"] <= asig[g][s2]["T2"] 
         prob.solve(PULP_CBC_CMD(msg=0))
         res_semanal = {(g, s): t for g in g_rotan for s in semanas for t in LISTA_TURNOS if value(asig[g][s][t]) == 1}
 
-        # --- 2. CONSTRUCCIÓN DÍA A DÍA ---
+        # --- 2. CONSTRUCCIÓN DÍA A DÍA CON BLOQUEOS PARA DISPONIBILIDAD ---
         final_rows = []
         turno_vivo = {g: res_semanal.get((g, semanas[0]), "T1") for g in g_rotan}
         g_disp = [g for g in g_finales if t_map[g] == "DISP"][0]
-        ultimo_turno_disp = "T1" # Inicial
+        # Rastreo del turno anterior del grupo disponible
+        ultimo_turno_disp = "T1" 
 
         for d_i in d_info:
             dia_nom = d_i["nom"]
             descansan_hoy = [g for g in g_rotan if d_map[g] == dia_nom]
             
-            # Asignación para grupos que rotan
             hoy_labels = {}
             for g in g_rotan:
                 if dia_nom == d_map[g]:
@@ -123,28 +122,36 @@ if df_raw is not None:
                 else:
                     hoy_labels[g] = turno_vivo[g]
             
-            # Asignación para el grupo de DISPONIBILIDAD
+            # Asignación del grupo de DISPONIBILIDAD
             if dia_nom == d_map[g_disp]:
                 label_disp = "DESC. LEY"
             else:
-                # Prioridad: Cubrir a los que descansan hoy
                 if descansan_hoy:
                     g_a_cubrir = descansan_hoy[0]
                     turno_necesario = turno_vivo[g_a_cubrir]
                     
-                    # REGLA DE SALTO: No T2 -> T1
-                    if ultimo_turno_disp == "T2" and turno_necesario == "T1":
-                        label_disp = "T2 (Apoyo)" # Se queda en T2 para no saltar a AM
-                    elif turno_necesario == "T3":
-                        label_disp = "T2 (Apoyo)" # Disponibilidad no hace T3
-                    else:
-                        label_disp = f"{turno_necesario} (Cubriendo {g_a_cubrir})"
+                    # --- APLICACIÓN DE REGLAS DE SEGURIDAD PARA DISPONIBILIDAD ---
+                    bloqueo_salud = False
+                    
+                    # 1. Bloqueo Post-T3 (Noche a cualquier otro)
+                    if ultimo_turno_disp == "T3":
+                        label_disp = "APOYO (Post-Noche)" 
+                        bloqueo_salud = True
+                    
+                    # 2. Bloqueo T2 a T1 (PM a AM)
+                    elif ultimo_turno_disp == "T2" and turno_necesario == "T1":
+                        label_disp = "T2 (Apoyo)"
+                        bloqueo_salud = True
+                    
+                    if not bloqueo_salud:
+                        label_disp = turno_necesario
                 else:
-                    label_disp = "T1 (Disponibilidad)"
-            
-            if "DESC" not in label_disp: ultimo_turno_disp = label_disp[:2]
+                    # Si nadie descansa, hace apoyo administrativo en T1 (o mantiene el ritmo)
+                    label_disp = "T1" if ultimo_turno_disp != "T2" else "T2"
 
-            # Guardar resultados
+            if "DESC" not in label_disp and "APOYO" not in label_disp:
+                ultimo_turno_disp = label_disp[:2] # Guardamos T1, T2 o T3
+
             for g in g_finales:
                 res_final = label_disp if g == g_disp else hoy_labels[g]
                 for _, m in df_celulas[df_celulas['grupo'] == g].iterrows():
@@ -160,17 +167,16 @@ if df_raw is not None:
 
         def aplicar_estilos(row):
             g_actual = row.name[0]
-            colores = {g_finales[0]: "#E3F2FD", g_finales[1]: "#F1F8E9", g_finales[2]: "#FFF3E0", g_finales[3]: "#F3E5F5"}
-            textos = {g_finales[0]: "#1565C0", g_finales[1]: "#2E7D32", g_finales[2]: "#EF6C00", g_finales[3]: "#7B1FA2"}
+            col_map = {g_finales[0]: "#E3F2FD", g_finales[1]: "#F1F8E9", g_finales[2]: "#FFF3E0", g_finales[3]: "#F3E5F5"}
+            txt_map = {g_finales[0]: "#1565C0", g_finales[1]: "#2E7D32", g_finales[2]: "#EF6C00", g_finales[3]: "#7B1FA2"}
             estilos = []
             for val in row:
                 v = str(val)
                 if 'DESC' in v: estilos.append('background-color: #EF5350; color: white; font-weight: bold')
-                elif 'Cubriendo' in v or 'Disponibilidad' in v: estilos.append(f'background-color: white; color: #7B1FA2; border: 2px dashed #7B1FA2; font-style: italic')
-                elif 'T3' == v: estilos.append('background-color: #263238; color: white; font-weight: bold')
-                elif 'T1' in v: estilos.append(f'background-color: {colores.get(g_actual)}; color: {textos.get(g_actual)}; border: 1px solid #166534')
-                elif 'T2' in v: estilos.append(f'background-color: {colores.get(g_actual)}; color: {textos.get(g_actual)}; border: 1px solid #0369a1')
-                else: estilos.append('color: gray')
+                elif 'T3' in v: estilos.append('background-color: #263238; color: white; font-weight: bold')
+                elif 'T1' in v: estilos.append(f'background-color: {col_map.get(g_actual)}; color: {txt_map.get(g_actual)}; border: 1px solid #166534')
+                elif 'T2' in v: estilos.append(f'background-color: {col_map.get(g_actual)}; color: {txt_map.get(g_actual)}; border: 1px solid #0369a1')
+                else: estilos.append('color: gray; font-style: italic')
             return estilos
 
         st.dataframe(piv.style.apply(aplicar_estilos, axis=1), use_container_width=True)
