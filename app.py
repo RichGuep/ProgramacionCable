@@ -6,26 +6,16 @@ from datetime import datetime
 import io
 import math
 
-# --- 1. CONFIGURACIÓN Y VARIABLES GLOBALES ---
-st.set_page_config(page_title="MovilGo Pro - Control de Células", layout="wide", page_icon="🎛️")
-
+# --- 1. CONFIGURACIÓN ---
+st.set_page_config(page_title="MovilGo Pro - Ciclo Noche-PM-AM", layout="wide", page_icon="⚙️")
 LISTA_TURNOS = ["AM", "PM", "Noche"]
-
-st.markdown("""
-    <style>
-    @import url('https://fonts.cdnfonts.com/css/century-gothic');
-    html, body, [class*="st-"], div, span, p, text { font-family: 'Century Gothic', sans-serif !important; }
-    .stApp { background-color: #f4f7f9; }
-    .status-card { background-color: white; padding: 20px; border-radius: 12px; box-shadow: 0 4px 6px rgba(0,0,0,0.05); border-top: 4px solid #1e293b; }
-    </style>
-    """, unsafe_allow_html=True)
 
 # --- 2. LOGIN ---
 if 'auth' not in st.session_state: st.session_state['auth'] = False
 if not st.session_state['auth']:
     _, col_login, _ = st.columns([1, 1.5, 1])
     with col_login:
-        st.markdown("<h1 style='text-align:center;'>MovilGo Control Panel</h1>", unsafe_allow_html=True)
+        st.markdown("<h1 style='text-align:center;'>MovilGo Control</h1>", unsafe_allow_html=True)
         with st.form("Login"):
             u = st.text_input("Usuario"); p = st.text_input("Contraseña", type="password")
             if st.form_submit_button("INGRESAR"):
@@ -48,10 +38,8 @@ def load_base():
 df_raw = load_base()
 
 if df_raw is not None:
-    # --- 4. PARAMETRIZADOR (SIDEBAR) ---
     with st.sidebar:
-        st.header("⚙️ Configuración")
-        
+        st.header("⚙️ Parametrización")
         with st.expander("📝 Receta de Célula", expanded=True):
             m_req = st.number_input("Masters", 1, 5, 2)
             ta_req = st.number_input("Técnicos A", 1, 15, 7)
@@ -81,123 +69,121 @@ if df_raw is not None:
 
     df_celulas, total_g = armar_celulas(df_raw, m_req, ta_req, tb_req)
 
-    # --- 5. SELECTOR DE DESCANSOS EXCLUSIVOS ---
-    st.title(f"🚀 Control Operativo - {mes_sel}")
-    st.subheader("📅 Asignación de Días de Ley (Exclusivos)")
+    st.title(f"🚀 Malla Operativa Ciclo Noche-PM-AM: {mes_sel}")
     
+    # Selector de descansos exclusivos
     opciones_descanso = ["Lunes", "Viernes", "Sabado", "Domingo"]
     dict_descansos = {}
     nombres_grupos = df_celulas['grupo'].unique()
-    
     cols = st.columns(max(total_g, 1))
     for i, g_name in enumerate(nombres_grupos):
         with cols[i]:
             dict_descansos[g_name] = st.selectbox(f"Ley {g_name}", opciones_descanso, index=i % len(opciones_descanso))
 
-    # --- VALIDACIÓN DE EXCLUSIVIDAD ---
-    valores_seleccionados = list(dict_descansos.values())
-    if len(valores_seleccionados) != len(set(valores_seleccionados)):
-        st.warning("⚠️ Hay grupos compartiendo el mismo día de descanso. Se recomienda exclusividad para no dejar la planta sola.")
-
-    # --- 6. MOTOR DE OPTIMIZACIÓN ---
+    # Fechas
     num_dias = calendar.monthrange(ano_sel, mes_num)[1]
     dias_range = range(1, num_dias + 1)
     dias_es = ["Lun", "Mar", "Mie", "Jue", "Vie", "Sab", "Dom"]
     dias_info = [{"n": d, "nombre": dias_es[datetime(ano_sel, mes_num, d).weekday()], "semana": datetime(ano_sel, mes_num, d).isocalendar()[1], "label": f"{d}-{dias_es[datetime(ano_sel, mes_num, d).weekday()]}"} for d in dias_range]
     semanas_mes = sorted(list(set([d["semana"] for d in dias_info])))
 
-    if st.button("⚡ GENERAR MALLA SIN SOLAPAMIENTO"):
-        with st.status("Optimizando flujos de trabajo...", expanded=True) as status:
-            prob = LpProblem("MovilGo_Sync", LpMaximize)
+    if st.button("⚡ GENERAR MALLA DE COBERTURA TOTAL"):
+        with st.status("Aplicando ciclo de rotación Noche-PM-AM...", expanded=True) as status:
+            prob = LpProblem("MovilGo_Cobertura", LpMaximize)
             asig_sem = LpVariable.dicts("AsigSem", (nombres_grupos, semanas_mes, LISTA_TURNOS), cat='Binary')
             
-            # Maximizar asignación
-            prob += lpSum([asig_sem[g][s][t] for g in nombres_grupos for s in semanas_mes for t in LISTA_TURNOS])
+            # --- FUNCIÓN OBJETIVO: Prioridad absoluta a llenar los turnos ---
+            prob += lpSum([asig_sem[g][s][t] * 100 for g in nombres_grupos for s in semanas_mes for t in LISTA_TURNOS])
 
             for s in semanas_mes:
                 for t in LISTA_TURNOS:
-                    # Garantizar que siempre haya cobertura (mínimo de células trabajando)
-                    prob += lpSum([asig_sem[g][s][t] for g in nombres_grupos]) <= cupo_cel_turno
+                    # Garantizar que los turnos estén cubiertos según el cupo
+                    prob += lpSum([asig_sem[g][s][t] for g in nombres_grupos]) == cupo_cel_turno
                 
                 for g in nombres_grupos:
-                    prob += lpSum([asig_sem[g][s][t] for t in LISTA_TURNOS]) <= 1
+                    # Cada grupo debe tener un turno asignado por semana
+                    prob += lpSum([asig_sem[g][s][t] for t in LISTA_TURNOS]) == 1
 
-            # Regla de Estabilidad y No-Retorno
+            # --- REGLA DE CICLO: Noche -> PM -> AM ---
             for g in nombres_grupos:
                 for i in range(len(semanas_mes)-1):
-                    prob += asig_sem[g][semanas_mes[i]]["Noche"] + asig_sem[g][semanas_mes[i+1]]["AM"] <= 0
-                    prob += asig_sem[g][semanas_mes[i]]["Noche"] + asig_sem[g][semanas_mes[i+1]]["PM"] <= 0
+                    s_act = semanas_mes[i]
+                    s_sig = semanas_mes[i+1]
+                    # Si es Noche, la que sigue es PM
+                    prob += asig_sem[g][s_act]["Noche"] <= asig_sem[g][s_sig]["PM"]
+                    # Si es PM, la que sigue es AM
+                    prob += asig_sem[g][s_act]["PM"] <= asig_sem[g][s_sig]["AM"]
+                    # Si es AM, la que sigue es Noche
+                    prob += asig_sem[g][s_act]["AM"] <= asig_sem[g][s_sig]["Noche"]
 
-            prob.solve(PULP_CBC_CMD(msg=0))
+            prob.solve(PULP_CBC_CMD(msg=0, timeLimit=30))
 
-            # --- PROCESAMIENTO CON LÓGICA DE SALIDA DE NOCHE ---
+            # --- PROCESAMIENTO ---
             res_list = []
             for d_i in dias_info:
                 for g in nombres_grupos:
-                    t_base = "---"
+                    t_final = "---"
                     for t in LISTA_TURNOS:
                         if value(asig_sem[g][d_i["semana"]][t]) == 1:
-                            t_base = t
+                            t_final = t
                     
+                    # Identificar si es su día de descanso de ley
+                    es_descanso = False
+                    dl_g = dict_descansos[g][:3]
+                    if d_i["nombre"] == dl_g:
+                        es_descanso = True
+
                     miembros = df_celulas[df_celulas['grupo'] == g]
                     for _, m in miembros.iterrows():
                         res_list.append({
                             "Dia": d_i["n"], "Label": d_i["label"], "Nom_Dia": d_i["nombre"], 
                             "Semana": d_i["semana"], "Empleado": m['nombre'], "Grupo": g,
-                            "Turno_Base": t_base, "Dia_Ley": dict_descansos[g]
+                            "Turno_Asig": t_final, "Es_Ley": es_descanso, "Dia_Ley": dict_descansos[g]
                         })
 
             df_res = pd.DataFrame(res_list)
             final_rows = []
             for _, g_emp in df_res.groupby("Empleado"):
                 g_emp = g_emp.sort_values("Dia").copy()
-                dl_pref = g_emp['Dia_Ley'].iloc[0][:3]
                 
                 for s in semanas_mes:
                     f_sem = g_emp[g_emp['Semana'] == s]
-                    idx_l = f_sem[f_sem['Nom_Dia'] == dl_pref].index
-                    turno_w = g_emp.loc[idx_l, 'Turno_Base'].values[0] if not idx_l.empty else "---"
+                    t_sem = f_sem['Turno_Asig'].iloc[0]
                     
-                    if turno_w == "Noche":
-                        # PRIORIDAD: Si es semana de noche, el descanso se mueve al final 
-                        # para no romper el ciclo nocturno (usualmente Domingo o Lunes)
-                        g_emp.loc[idx_l, 'Turno_Final'] = "Noche"
-                        # Buscamos el día de descanso compensatorio al final de la jornada de noche
-                        idx_c = g_emp[(g_emp['Semana'] == s) & (g_emp['Nom_Dia'].isin(['Dom', 'Lun']))].tail(1).index
-                        if not idx_c.empty: g_emp.loc[idx_c, 'Turno_Final'] = "DESC. POST-NOCHE"
-                    elif turno_w != "---":
-                        # Semana normal: Si trabajó su ley, compensa entre semana
-                        g_emp.loc[idx_l, 'Turno_Final'] = turno_w
-                        idx_comp = g_emp[(g_emp['Semana'] == s) & (g_emp['Nom_Dia'].isin(['Mar', 'Mie', 'Jue']))].head(1).index
-                        if not idx_comp.empty: g_emp.loc[idx_comp, 'Turno_Final'] = "DESC. COMPENSATORIO"
+                    # Lógica de descansos:
+                    if t_sem == "Noche":
+                        # Salida de Noche: El descanso de ley se mueve al final de la semana (Dom o Lun)
+                        g_emp.loc[f_sem.index, 'Resultado'] = "Noche"
+                        idx_desc = f_sem[f_sem['Nom_Dia'].isin(['Dom', 'Lun'])].tail(1).index
+                        g_emp.loc[idx_desc, 'Resultado'] = "DESC. POST-NOCHE"
                     else:
-                        if not idx_l.empty: g_emp.loc[idx_l, 'Turno_Final'] = "DESC. LEY"
-                
-                g_emp['Turno_Final'] = g_emp['Turno_Final'].fillna(g_emp['Turno_Base'])
-                g_emp.loc[g_emp['Turno_Final'] == '---', 'Turno_Final'] = 'DISPONIBILIDAD'
+                        # Semanas AM o PM: Descansa en su día de contrato
+                        g_emp.loc[f_sem.index, 'Resultado'] = t_sem
+                        idx_ley = f_sem[f_sem['Es_Ley'] == True].index
+                        if not idx_ley.empty:
+                            g_emp.loc[idx_ley, 'Resultado'] = "DESC. LEY"
+                        else:
+                            # Si su día de ley no está en esta semana (meses partidos), compensatorio
+                            idx_comp = f_sem[f_sem['Nom_Dia'] == 'Lun'].index
+                            g_emp.loc[idx_comp, 'Resultado'] = "DESC. COMPENSATORIO"
+
                 final_rows.append(g_emp)
 
-            st.session_state['malla_final'] = pd.concat(final_rows)
-            status.update(label="✅ Malla sincronizada y optimizada.", state="complete")
+            st.session_state['malla_ciclo'] = pd.concat(final_rows)
+            status.update(label="✅ Malla generada con ciclo Noche-PM-AM.", state="complete")
 
     # --- 7. VISTAS ---
-    if 'malla_final' in st.session_state:
-        tab1, tab2 = st.tabs(["📅 Malla", "⚖️ Auditoría"])
-        with tab1:
-            df_v = st.session_state['malla_final']
-            pivote = df_v.pivot(index=['Grupo', 'Empleado'], columns='Label', values='Turno_Final')
-            cols_ord = sorted(pivote.columns, key=lambda x: int(x.split('-')[0]))
+    if 'malla_ciclo' in st.session_state:
+        df_v = st.session_state['malla_ciclo']
+        pivote = df_v.pivot(index=['Grupo', 'Empleado'], columns='Label', values='Resultado')
+        cols_ord = sorted(pivote.columns, key=lambda x: int(x.split('-')[0]))
+        
+        def styler(v):
+            if 'LEY' in str(v): return 'background-color: #fee2e2; color: #991b1b; font-weight: bold'
+            if 'COMP' in str(v) or 'POST' in str(v): return 'background-color: #fef9c3; color: #854d0e; font-weight: bold'
+            if v == 'Noche': return 'background-color: #1e293b; color: white'
+            if v == 'PM': return 'background-color: #e0f2fe; color: #0369a1'
+            if v == 'AM': return 'background-color: #dcfce7; color: #166534'
+            return ''
             
-            def styler(v):
-                if 'LEY' in str(v): return 'background-color: #fee2e2; color: #991b1b; font-weight: bold'
-                if 'COMP' in str(v) or 'POST' in str(v): return 'background-color: #fef9c3; color: #854d0e; font-weight: bold'
-                if v == 'Noche': return 'background-color: #1e293b; color: white'
-                return ''
-            st.dataframe(pivote[cols_ord].style.map(styler), use_container_width=True)
-
-        with tab2:
-            audit = []
-            for emp, data in st.session_state['malla_final'].groupby("Empleado"):
-                total = len(data[data['Turno_Final'].str.contains('DESC')])
-                audit.append({"Empleado": emp, "Grupo": data['Grupo'].iloc[0], "Descansos": total, "Semanas": len(semanas_mes)})
-            st.table(pd.DataFrame(audit))
+        st.dataframe(pivote[cols_ord].style.map(styler), use_container_width=True)
