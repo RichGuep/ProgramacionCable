@@ -5,7 +5,7 @@ import calendar
 from datetime import datetime
 
 # --- 1. CONFIGURACIÓN ---
-st.set_page_config(page_title="MovilGo - Lógica Blindada", layout="wide", page_icon="🛡️")
+st.set_page_config(page_title="MovilGo - Gestión Mensual de Disponibilidad", layout="wide", page_icon="⚙️")
 LISTA_TURNOS = ["T1", "T2", "T3"] 
 DIAS_SEMANA = ["Lunes", "Martes", "Miercoles", "Jueves", "Viernes", "Sabado", "Domingo"]
 
@@ -23,7 +23,7 @@ if not st.session_state['auth']:
                 else: st.error("Acceso denegado")
     st.stop()
 
-# --- 3. CARGA Y PROCESAMIENTO ---
+# --- 3. CARGA DE DATOS ---
 @st.cache_data
 def load_base():
     try:
@@ -48,24 +48,25 @@ if df_raw is not None:
         ano_sel = st.selectbox("Año", [2025, 2026], index=1)
         mes_num = meses.index(mes_sel) + 1
 
-    num_mas = len(df_raw[df_raw['cargo'].str.contains('Master', case=False)])
-    num_tca = len(df_raw[df_raw['cargo'].str.contains('Tecnico A', case=False)])
-    num_tcb = len(df_raw[df_raw['cargo'].str.contains('Tecnico B', case=False)])
-    num_g = min(num_mas//m_req if m_req>0 else 99, num_tca//ta_req if ta_req>0 else 99, num_tcb//tb_req if tb_req>0 else 99)
-
-    st.title(f"🔄 Malla: Rotación Estricta Post-Descanso")
+    num_g = 4 # Forzamos 4 grupos para esta lógica
+    st.title(f"🗓️ Planificación: {mes_sel} {ano_sel}")
+    st.info("💡 Grupo de Disponibilidad: No hace T3 y no salta de T2 a T1 sin descanso.")
     
-    with st.expander("📅 Configuración de Descansos", expanded=True):
-        n_map, d_map = {}, {}
-        cols = st.columns(num_g if num_g > 0 else 1)
+    with st.expander("📅 Configuración de Grupos", expanded=True):
+        n_map, d_map, t_map = {}, {}, {}
+        cols = st.columns(num_g)
         for i in range(num_g):
             with cols[i]:
-                n_s = st.text_input(f"G{i+1}", f"GRUPO {i+1}", key=f"n_{i}")
+                g_id = f"G{i+1}"
+                n_s = st.text_input(f"Nombre {g_id}", f"GRUPO {i+1}", key=f"n_{i}")
                 d_s = st.selectbox(f"Descanso", DIAS_SEMANA, index=i % 7, key=f"d_{i}")
-                n_map[f"G{i+1}"] = n_s
+                # Elegir quién es el grupo de disponibilidad este mes
+                es_disp = st.checkbox("¿Es Disponibilidad?", value=(i==3), key=f"t_{i}")
+                n_map[g_id] = n_s
                 d_map[n_s] = d_s
+                t_map[n_s] = "DISP" if es_disp else "ROTA"
 
-    # Armado de grupos
+    # Distribución de personal
     mas_p, tca_p, tcb_p = df_raw[df_raw['cargo'].str.contains('Master', case=False)].copy(), df_raw[df_raw['cargo'].str.contains('Tecnico A', case=False)].copy(), df_raw[df_raw['cargo'].str.contains('Tecnico B', case=False)].copy()
     c_list = []
     for i in range(num_g):
@@ -83,72 +84,71 @@ if df_raw is not None:
     d_info = [{"n": d, "nom": DIAS_SEMANA[datetime(ano_sel, mes_num, d).weekday()], "sem": datetime(ano_sel, mes_num, d).isocalendar()[1], "label": f"{d:02d}-{DIAS_SEMANA[datetime(ano_sel, mes_num, d).weekday()][:3]}"} for d in range(1, num_dias + 1)]
     semanas = sorted(list(set([d["sem"] for d in d_info])))
 
-    if st.button("⚡ GENERAR MALLA (BLOQUEO POST-DESCANSO)"):
-        # Optimizamos solo los turnos base por semana calendario
-        prob = LpProblem("MovilGo_Core", LpMinimize)
-        asig = LpVariable.dicts("Asig", (g_finales, semanas, LISTA_TURNOS), cat='Binary')
-        prob += lpSum([ (1 - asig[g][s][t]) for g in g_finales for s in semanas for t in LISTA_TURNOS])
+    if st.button("⚡ GENERAR MALLA OPTIMIZADA"):
+        # 1. OPTIMIZACIÓN DE TURNOS BASE (GRUPOS QUE ROTAN)
+        g_rotan = [g for g in g_finales if t_map[g] == "ROTA"]
+        prob = LpProblem("MovilGo_Rota", LpMinimize)
+        asig = LpVariable.dicts("Asig", (g_rotan, semanas, LISTA_TURNOS), cat='Binary')
         
+        prob += lpSum([ (1 - asig[g][s][t]) for g in g_rotan for s in semanas for t in LISTA_TURNOS])
         for s in semanas:
-            for t in LISTA_TURNOS: prob += lpSum([asig[g][s][t] for g in g_finales]) >= 1
-            for g in g_finales: prob += lpSum([asig[g][s][t] for t in LISTA_TURNOS]) <= 1
+            for t in LISTA_TURNOS: prob += lpSum([asig[g][s][t] for g in g_rotan]) == 1
+            for g in g_rotan: prob += lpSum([asig[g][s][t] for t in LISTA_TURNOS]) == 1
         
-        for g in g_finales:
+        for g in g_rotan:
             for i in range(len(semanas)-1):
                 s1, s2 = semanas[i], semanas[i+1]
                 prob += asig[g][s1]["T2"] <= asig[g][s2]["T3"] # PM -> Noche
                 prob += asig[g][s1]["T3"] <= asig[g][s2]["T1"] # Noche -> AM
                 prob += asig[g][s1]["T1"] <= asig[g][s2]["T2"] # AM -> PM
-        
         prob.solve(PULP_CBC_CMD(msg=0))
+        res_semanal = {(g, s): t for g in g_rotan for s in semanas for t in LISTA_TURNOS if value(asig[g][s][t]) == 1}
 
-        # Turnos base teóricos
-        res_semanal = {(g, s): t for g in g_finales for s in semanas for t in LISTA_TURNOS if value(asig[g][s][t]) == 1}
-
-        # --- CONSTRUCCIÓN DÍA A DÍA CON LÓGICA DE ARRASTRE ---
+        # --- 2. CONSTRUCCIÓN DÍA A DÍA ---
         final_rows = []
-        # Diccionario para recordar el turno "vivo" de cada grupo
-        turno_vivo = {g: res_semanal.get((g, semanas[0]), "T1") for g in g_finales}
+        turno_vivo = {g: res_semanal.get((g, semanas[0]), "T1") for g in g_rotan}
+        g_disp = [g for g in g_finales if t_map[g] == "DISP"][0]
+        ultimo_turno_disp = "T1" # Inicial
 
         for d_i in d_info:
-            dia_actual_str = d_i["nom"]
-            # 1. Identificar quién descansa hoy
-            descansan_hoy = [g for g in g_finales if d_map[g] == dia_actual_str]
-            # 2. Identificar el grupo de apoyo (el que no tiene turno asignado o el extra)
-            # Para este ejemplo, si hay un grupo "Disponible", será el que cubra.
+            dia_nom = d_i["nom"]
+            descansan_hoy = [g for g in g_rotan if d_map[g] == dia_nom]
             
-            asignaciones_hoy = {}
-            for g in g_finales:
-                es_descanso = (dia_actual_str == d_map[g])
-                
-                if es_descanso:
-                    asignaciones_hoy[g] = "DESC. LEY"
-                    # CRÍTICO: Al final de este día (después del descanso), 
-                    # el turno vivo cambia al que corresponde a esta semana calendario
+            # Asignación para grupos que rotan
+            hoy_labels = {}
+            for g in g_rotan:
+                if dia_nom == d_map[g]:
+                    hoy_labels[g] = "DESC. LEY"
                     turno_vivo[g] = res_semanal.get((g, d_i["sem"]), turno_vivo[g])
                 else:
-                    asignaciones_hoy[g] = turno_vivo[g]
+                    hoy_labels[g] = turno_vivo[g]
+            
+            # Asignación para el grupo de DISPONIBILIDAD
+            if dia_nom == d_map[g_disp]:
+                label_disp = "DESC. LEY"
+            else:
+                # Prioridad: Cubrir a los que descansan hoy
+                if descansan_hoy:
+                    g_a_cubrir = descansan_hoy[0]
+                    turno_necesario = turno_vivo[g_a_cubrir]
+                    
+                    # REGLA DE SALTO: No T2 -> T1
+                    if ultimo_turno_disp == "T2" and turno_necesario == "T1":
+                        label_disp = "T2 (Apoyo)" # Se queda en T2 para no saltar a AM
+                    elif turno_necesario == "T3":
+                        label_disp = "T2 (Apoyo)" # Disponibilidad no hace T3
+                    else:
+                        label_disp = f"{turno_necesario} (Cubriendo {g_a_cubrir})"
+                else:
+                    label_disp = "T1 (Disponibilidad)"
+            
+            if "DESC" not in label_disp: ultimo_turno_disp = label_disp[:2]
 
-            # 3. Lógica de Apoyo: Si un grupo está marcado como "APOYO" (ej. Grupo 4)
-            # debe cubrir el turno que dejó el que está en DESC. LEY
+            # Guardar resultados
             for g in g_finales:
-                res_final = asignaciones_hoy[g]
-                
-                # Si el grupo actual es el de apoyo (puedes definirlo por nombre o por lógica)
-                # Aquí asumimos que el Grupo 4 es apoyo si no está en el ciclo principal
-                if "GRUPO 4" in g and res_final != "DESC. LEY":
-                    for g_descanso in descansan_hoy:
-                        # El de apoyo toma el turno que venía haciendo el que descansó
-                        turno_a_cubrir = turno_vivo[g_descanso]
-                        res_final = f"{turno_a_cubrir} (Apoyo G{g_descanso[-1]})"
-                        break
-
-                miembros = df_celulas[df_celulas['grupo'] == g]
-                for _, m in miembros.iterrows():
-                    final_rows.append({
-                        "Dia": d_i["n"], "Label": d_i["label"], "Empleado": m['nombre'], 
-                        "Cargo": m['cargo'], "Grupo": g, "Final": res_final
-                    })
+                res_final = label_disp if g == g_disp else hoy_labels[g]
+                for _, m in df_celulas[df_celulas['grupo'] == g].iterrows():
+                    final_rows.append({"Dia": d_i["n"], "Label": d_i["label"], "Empleado": m['nombre'], "Cargo": m['cargo'], "Grupo": g, "Final": res_final})
 
         st.session_state['malla_final'] = pd.DataFrame(final_rows)
 
@@ -160,14 +160,14 @@ if df_raw is not None:
 
         def aplicar_estilos(row):
             g_actual = row.name[0]
-            colores = {g_finales[0]: "#E3F2FD", g_finales[1] if len(g_finales)>1 else "N": "#F1F8E9", g_finales[2] if len(g_finales)>2 else "N": "#FFF3E0", g_finales[3] if len(g_finales)>3 else "N": "#F3E5F5"}
-            textos = {g_finales[0]: "#1565C0", g_finales[1] if len(g_finales)>1 else "N": "#2E7D32", g_finales[2] if len(g_finales)>2 else "N": "#EF6C00", g_finales[3] if len(g_finales)>3 else "N": "#7B1FA2"}
+            colores = {g_finales[0]: "#E3F2FD", g_finales[1]: "#F1F8E9", g_finales[2]: "#FFF3E0", g_finales[3]: "#F3E5F5"}
+            textos = {g_finales[0]: "#1565C0", g_finales[1]: "#2E7D32", g_finales[2]: "#EF6C00", g_finales[3]: "#7B1FA2"}
             estilos = []
             for val in row:
                 v = str(val)
                 if 'DESC' in v: estilos.append('background-color: #EF5350; color: white; font-weight: bold')
-                elif 'Apoyo' in v: estilos.append(f'background-color: white; color: {textos.get(g_actual)}; border: 2px dashed {textos.get(g_actual)}; font-size: 0.85em')
-                elif 'T3' in v: estilos.append('background-color: #263238; color: white; font-weight: bold')
+                elif 'Cubriendo' in v or 'Disponibilidad' in v: estilos.append(f'background-color: white; color: #7B1FA2; border: 2px dashed #7B1FA2; font-style: italic')
+                elif 'T3' == v: estilos.append('background-color: #263238; color: white; font-weight: bold')
                 elif 'T1' in v: estilos.append(f'background-color: {colores.get(g_actual)}; color: {textos.get(g_actual)}; border: 1px solid #166534')
                 elif 'T2' in v: estilos.append(f'background-color: {colores.get(g_actual)}; color: {textos.get(g_actual)}; border: 1px solid #0369a1')
                 else: estilos.append('color: gray')
