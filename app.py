@@ -6,8 +6,11 @@ from datetime import datetime
 import io
 import math
 
-# --- 1. CONFIGURACIÓN Y ESTILOS ---
+# --- 1. CONFIGURACIÓN Y VARIABLES GLOBALES ---
 st.set_page_config(page_title="MovilGo Pro - Gestión de Células", layout="wide", page_icon="🎛️")
+
+# ESTA ES LA VARIABLE QUE CAUSABA EL ERROR: DEBE ESTAR AQUÍ AFUERA
+LISTA_TURNOS = ["AM", "PM", "Noche"]
 
 st.markdown("""
     <style>
@@ -63,7 +66,7 @@ if df_raw is not None:
         
         cupo_cel_turno = st.number_input("Células simultáneas por turno", 1, 10, 1)
 
-    # Armado automático de células basado en la receta
+    # Armado automático de células
     def armar_celulas(df, m, ta, tb):
         masters = df[df['cargo'].str.contains('Master', case=False, na=False)].copy()
         teca = df[df['cargo'].str.contains('Tecnico A', case=False, na=False)].copy()
@@ -80,21 +83,17 @@ if df_raw is not None:
 
     df_celulas, total_g = armar_celulas(df_raw, m_req, ta_req, tb_req)
 
-    # --- 5. SELECTOR DE DESCANSOS (INCLUYE LUNES) ---
+    # --- 5. SELECTOR DE DESCANSOS ---
     st.title(f"🚀 Control Operativo - {mes_sel}")
+    st.subheader("📅 Días de Ley por Grupo")
     
-    st.subheader("📅 Definición de Días de Ley por Grupo")
     col_g = st.columns(max(total_g, 1))
     dict_descansos = {}
-    
-    # OPCIONES DE DESCANSO ACTUALIZADAS
     opciones_descanso = ["Lunes", "Viernes", "Sabado", "Domingo"]
     
     for i, g_name in enumerate(df_celulas['grupo'].unique()):
         with col_g[i]:
-            # Distribución automática inicial, pero permite cambio manual
-            def_idx = i % len(opciones_descanso)
-            dict_descansos[g_name] = st.selectbox(f"Ley {g_name}", opciones_descanso, index=def_idx)
+            dict_descansos[g_name] = st.selectbox(f"Ley {g_name}", opciones_descanso, index=i % len(opciones_descanso))
 
     # --- 6. MOTOR DE OPTIMIZACIÓN ---
     num_dias = calendar.monthrange(ano_sel, mes_num)[1]
@@ -104,11 +103,11 @@ if df_raw is not None:
     semanas_mes = sorted(list(set([d["semana"] for d in dias_info])))
 
     if st.button("⚡ GENERAR MALLA POR CÉLULAS"):
-        with st.status("Garantizando estabilidad semanal y descansos...", expanded=True) as status:
+        with st.status("Garantizando estabilidad semanal...", expanded=True) as status:
             nombres_g = df_celulas['grupo'].unique().tolist()
             prob = LpProblem("MovilGo_Pro", LpMaximize)
             
-            # Asignación de turno por SEMANA para mantener estabilidad
+            # Asignación de turno por SEMANA
             asig_sem = LpVariable.dicts("AsigSem", (nombres_g, semanas_mes, LISTA_TURNOS), cat='Binary')
             
             prob += lpSum([asig_sem[g][s][t] for g in nombres_g for s in semanas_mes for t in LISTA_TURNOS])
@@ -119,7 +118,7 @@ if df_raw is not None:
                 for g in nombres_g:
                     prob += lpSum([asig_sem[g][s][t] for t in LISTA_TURNOS]) <= 1
 
-            # Evitar Noche -> AM
+            # Restricción Noche -> AM
             for g in nombres_g:
                 for i in range(len(semanas_mes)-1):
                     prob += asig_sem[g][semanas_mes[i]]["Noche"] + asig_sem[g][semanas_mes[i+1]]["AM"] <= 1
@@ -143,8 +142,6 @@ if df_raw is not None:
                         })
 
             df_res = pd.DataFrame(res_list)
-            
-            # --- LÓGICA DE DESCANSOS Y COMPENSATORIOS ---
             final_rows = []
             for _, g_emp in df_res.groupby("Empleado"):
                 g_emp = g_emp.sort_values("Dia").copy()
@@ -155,13 +152,12 @@ if df_raw is not None:
                     idx_l = f_sem[f_sem['Nom_Dia'] == d_ley_pref].index
                     
                     if not idx_l.empty:
-                        # Si el motor le puso turno en su día de ley, lo marcamos pero buscamos compensatorio
                         turno_b = g_emp.loc[idx_l, 'Turno_Base'].values[0]
-                        
                         if turno_b != "---":
-                            # Trabajó su Ley -> Buscar compensatorio el día siguiente o anterior (Martes o Jueves)
+                            # Trabajó su día de ley -> Generar Compensatorio 1:1
                             g_emp.loc[idx_l, 'Turno_Final'] = turno_b
-                            idx_c = g_emp[(g_emp['Semana'] == s) & (g_emp['Nom_Dia'].isin(['Mar', 'Mie', 'Jue'])) & (g_emp['Turno_Base'] == turno_b)].head(1).index
+                            # Buscar hueco en la misma semana (diferente al día de ley)
+                            idx_c = g_emp[(g_emp['Semana'] == s) & (~g_emp['Nom_Dia'].isin(['Vie','Sab','Dom','Lun'])) & (g_emp['Turno_Base'] != "---")].head(1).index
                             if not idx_c.empty: g_emp.loc[idx_c, 'Turno_Final'] = "DESC. COMPENSATORIO"
                         else:
                             g_emp.loc[idx_l, 'Turno_Final'] = "DESC. LEY"
@@ -171,17 +167,16 @@ if df_raw is not None:
                 final_rows.append(g_emp)
 
             st.session_state['malla_final'] = pd.concat(final_rows)
-            status.update(label="✅ Malla generada con Lunes incluido.", state="complete")
+            status.update(label="✅ Malla generada satisfactoriamente.", state="complete")
 
-    # --- 7. VISTAS, FILTROS Y AUDITORÍA ---
+    # --- 7. VISTAS Y AUDITORÍA ---
     if 'malla_final' in st.session_state:
-        t_malla, t_audit = st.tabs(["📅 Malla Operativa", "⚖️ Auditoría de Descansos"])
+        tab_m, tab_a = st.tabs(["📅 Malla Operativa", "⚖️ Auditoría"])
         
-        with t_malla:
-            # Filtros
+        with tab_m:
             c1, c2 = st.columns(2)
-            sel_g = c1.multiselect("Filtrar Células", st.session_state['malla_final']['Grupo'].unique())
-            search_e = c2.text_input("Buscar por Nombre")
+            sel_g = c1.multiselect("Células", st.session_state['malla_final']['Grupo'].unique())
+            search_e = c2.text_input("Buscar Nombre")
             
             df_v = st.session_state['malla_final'].copy()
             if sel_g: df_v = df_v[df_v['Grupo'].isin(sel_g)]
@@ -195,22 +190,11 @@ if df_raw is not None:
                 if 'COMP' in str(v): return 'background-color: #fef9c3; color: #854d0e; font-weight: bold'
                 if v == 'Noche': return 'background-color: #1e293b; color: white'
                 return ''
-            
             st.dataframe(pivote[cols_ord].style.map(styler), use_container_width=True)
 
-        with t_audit:
-            st.subheader("Reporte de Cumplimiento")
-            audit_list = []
+        with tab_a:
+            audit = []
             for emp, data in st.session_state['malla_final'].groupby("Empleado"):
-                ley = len(data[data['Turno_Final'] == 'DESC. LEY'])
-                comp = len(data[data['Turno_Final'] == 'DESC. COMPENSATORIO'])
-                total = ley + comp
-                audit_list.append({
-                    "Empleado": emp,
-                    "Grupo": data['Grupo'].iloc[0],
-                    "Día de Ley": data['Dia_Ley'].iloc[0],
-                    "Descansos Tomados": total,
-                    "Semanas Mes": len(semanas_mes),
-                    "Estado": "✅ CUMPLE" if total >= len(semanas_mes) else "⚠️ REVISAR"
-                })
-            st.table(pd.DataFrame(audit_list))
+                total = len(data[data['Turno_Final'].str.contains('DESC')])
+                audit.append({"Empleado": emp, "Grupo": data['Grupo'].iloc[0], "Ley": data['Dia_Ley'].iloc[0], "Descansos": total, "Estado": "✅ OK" if total >= len(semanas_mes) else "⚠️ Revisar"})
+            st.table(pd.DataFrame(audit))
