@@ -5,7 +5,7 @@ import calendar
 from datetime import datetime
 
 # --- 1. CONFIGURACIÓN ---
-st.set_page_config(page_title="MovilGo Pro - Continuidad Operativa", layout="wide", page_icon="⚡")
+st.set_page_config(page_title="MovilGo Pro - Continuidad Total", layout="wide", page_icon="⚡")
 LISTA_TURNOS = ["AM", "PM", "Noche"]
 
 # --- 2. LOGIN ---
@@ -19,7 +19,7 @@ if not st.session_state['auth']:
             if st.form_submit_button("INGRESAR"):
                 if u == "richard.guevara@greenmovil.com.co" and p == "Admin2026":
                     st.session_state['auth'] = True; st.rerun()
-                else: st.error("Credenciales Incorrectas")
+                else: st.error("Acceso denegado")
     st.stop()
 
 # --- 3. CARGA DE DATOS ---
@@ -37,7 +37,7 @@ df_raw = load_base()
 
 if df_raw is not None:
     with st.sidebar:
-        st.header("⚙️ Parámetros")
+        st.header("⚙️ Parametrización")
         m_req = st.number_input("Masters", 1, 5, 2)
         ta_req = st.number_input("Técnicos A", 1, 15, 7)
         tb_req = st.number_input("Técnicos B", 1, 10, 3)
@@ -48,7 +48,6 @@ if df_raw is not None:
         mes_num = meses.index(mes_sel) + 1
 
     def armar_celulas(df, m, ta, tb):
-        # ... (Lógica de armado de células igual a la anterior)
         masters = df[df['cargo'].str.contains('Master', case=False, na=False)].copy()
         teca = df[df['cargo'].str.contains('Tecnico A', case=False, na=False)].copy()
         tecb = df[df['cargo'].str.contains('Tecnico B', case=False, na=False)].copy()
@@ -63,7 +62,7 @@ if df_raw is not None:
 
     df_celulas, total_g = armar_celulas(df_raw, m_req, ta_req, tb_req)
 
-    st.title(f"📊 Programación: {mes_sel}")
+    st.title(f"📊 Programación Semanal: {mes_sel}")
     
     # Días de descanso por grupo
     opciones_descanso = ["Lunes", "Viernes", "Sabado", "Domingo"]
@@ -80,9 +79,9 @@ if df_raw is not None:
     dias_info = [{"n": d, "nombre": dias_es[datetime(ano_sel, mes_num, d).weekday()], "semana": datetime(ano_sel, mes_num, d).isocalendar()[1], "label": f"{d}-{dias_es[datetime(ano_sel, mes_num, d).weekday()]}"} for d in dias_range]
     semanas_mes = sorted(list(set([d["semana"] for d in dias_info])))
 
-    if st.button("⚡ GENERAR MALLA (SIN DESCANSOS POST-NOCHE)"):
-        with st.status("Optimizando continuidad operativa...", expanded=True) as status:
-            prob = LpProblem("MovilGo_Continuo", LpMaximize)
+    if st.button("⚡ GENERAR MALLA (SOLO LEY)"):
+        with st.status("Garantizando cobertura sin interrupciones post-noche...", expanded=True) as status:
+            prob = LpProblem("MovilGo_Continuidad_Real", LpMaximize)
             asig_sem = LpVariable.dicts("AsigSem", (nombres_grupos, semanas_mes, LISTA_TURNOS), cat='Binary')
             
             # Prioridad de cobertura
@@ -90,11 +89,12 @@ if df_raw is not None:
 
             for s in semanas_mes:
                 for t in LISTA_TURNOS:
+                    # Garantizar 1 grupo por turno
                     prob += lpSum([asig_sem[g][s][t] for g in nombres_grupos]) == 1
                 for g in nombres_grupos:
                     prob += lpSum([asig_sem[g][s][t] for t in LISTA_TURNOS]) <= 1
 
-            # Rotación Noche -> PM -> AM
+            # Ciclo Noche -> PM -> AM
             for g in nombres_grupos:
                 for i in range(len(semanas_mes)-1):
                     s_a = semanas_mes[i]; s_s = semanas_mes[i+1]
@@ -128,10 +128,10 @@ if df_raw is not None:
                     f_sem = g_emp[g_emp['Semana'] == s]
                     t_s = f_sem['Turno_Base'].iloc[0]
                     
-                    # APLICACIÓN DE TURNOS SIN DESCANSOS POST-NOCHE
-                    # Se mantiene el turno base y solo se marca DESC. LEY en el día que corresponde
+                    # LÓGICA FINAL: El turno es continuo toda la semana
                     g_emp.loc[f_sem.index, 'Resultado'] = t_s
                     
+                    # Solo se interrumpe por el día de LEY seleccionado
                     idx_l = f_sem[f_sem['Es_Ley']].index
                     if not idx_l.empty:
                         g_emp.loc[idx_l, 'Resultado'] = "DESC. LEY"
@@ -139,7 +139,7 @@ if df_raw is not None:
                 f_rows.append(g_emp)
 
             st.session_state['malla_final'] = pd.concat(f_rows)
-            status.update(label="✅ Malla generada con éxito.", state="complete")
+            status.update(label="✅ Malla generada: Continuidad total hasta día de Ley.", state="complete")
 
     if 'malla_final' in st.session_state:
         piv = st.session_state['malla_final'].pivot(index=['Grupo', 'Empleado'], columns='Label', values='Resultado')
