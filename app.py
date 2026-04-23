@@ -3,10 +3,9 @@ import pandas as pd
 from pulp import *
 import calendar
 from datetime import datetime
-import io
 
-# --- 1. CONFIGURACIÓN Y VARIABLES GLOBALES ---
-st.set_page_config(page_title="MovilGo Pro - Auditoría 360", layout="wide", page_icon="⚡")
+# --- 1. CONFIGURACIÓN ---
+st.set_page_config(page_title="MovilGo Pro - Respaldo Dinámico", layout="wide", page_icon="🛡️")
 LISTA_TURNOS = ["AM", "PM", "Noche"]
 
 # --- 2. LOGIN ---
@@ -38,7 +37,7 @@ df_raw = load_base()
 
 if df_raw is not None:
     with st.sidebar:
-        st.header("⚙️ Configuración de Celulas")
+        st.header("⚙️ Parámetros")
         m_req = st.number_input("Masters", 1, 5, 2)
         ta_req = st.number_input("Técnicos A", 1, 15, 7)
         tb_req = st.number_input("Técnicos B", 1, 10, 3)
@@ -63,9 +62,8 @@ if df_raw is not None:
 
     df_celulas, total_g = armar_celulas(df_raw, m_req, ta_req, tb_req)
 
-    st.title(f"🚀 Panel de Control: {mes_sel}")
+    st.title(f"📊 Gestión de Turnos y Respaldo: {mes_sel}")
     
-    # Selector de descansos
     opciones_descanso = ["Lunes", "Viernes", "Sabado", "Domingo"]
     dict_descansos = {}
     nombres_grupos = df_celulas['grupo'].unique()
@@ -80,19 +78,24 @@ if df_raw is not None:
     dias_info = [{"n": d, "nombre": dias_es[datetime(ano_sel, mes_num, d).weekday()], "semana": datetime(ano_sel, mes_num, d).isocalendar()[1], "label": f"{d}-{dias_es[datetime(ano_sel, mes_num, d).weekday()]}"} for d in dias_range]
     semanas_mes = sorted(list(set([d["semana"] for d in dias_info])))
 
-    if st.button("⚡ GENERAR MALLA Y ACTIVAR AUDITORÍA"):
-        with st.status("Calculando cobertura y validando reglas laborales...", expanded=True) as status:
-            prob = LpProblem("MovilGo_Auditoria", LpMaximize)
+    if st.button("⚡ GENERAR MALLA CON RESPALDO AUTOMÁTICO"):
+        with st.status("Asignando grupos disponibles a turnos faltantes...", expanded=True) as status:
+            prob = LpProblem("MovilGo_Respaldo", LpMaximize)
             asig_sem = LpVariable.dicts("AsigSem", (nombres_grupos, semanas_mes, LISTA_TURNOS), cat='Binary')
             
+            # Prioridad máxima a la cobertura de los 3 turnos base
             prob += lpSum([asig_sem[g][s][t] for g in nombres_grupos for s in semanas_mes for t in LISTA_TURNOS])
 
             for s in semanas_mes:
                 for t in LISTA_TURNOS:
-                    prob += lpSum([asig_sem[g][s][t] for g in nombres_grupos]) == 1
+                    # Garantizar que siempre haya al menos 1 grupo (pueden ser más si hay disponibles)
+                    prob += lpSum([asig_sem[g][s][t] for g in nombres_grupos]) >= 1
+                
                 for g in nombres_grupos:
+                    # Un grupo solo un turno por semana
                     prob += lpSum([asig_sem[g][s][t] for t in LISTA_TURNOS]) <= 1
 
+            # Rotación Noche -> PM -> AM
             for g in nombres_grupos:
                 for i in range(len(semanas_mes)-1):
                     s_a = semanas_mes[i]; s_s = semanas_mes[i+1]
@@ -101,19 +104,22 @@ if df_raw is not None:
 
             prob.solve(PULP_CBC_CMD(msg=0))
 
+            # Procesamiento de resultados
             res_list = []
             for d_i in dias_info:
                 for g in nombres_grupos:
-                    t_f = "DISPONIBILIDAD"
+                    t_sem = "DISPONIBILIDAD"
                     for t in LISTA_TURNOS:
-                        if value(asig_sem[g][d_i["semana"]][t]) == 1: t_f = t
+                        if value(asig_sem[g][d_i["semana"]][t]) == 1:
+                            t_sem = t
+                    
                     es_ley = (d_i["nombre"] == dict_descansos[g][:3])
                     miembros = df_celulas[df_celulas['grupo'] == g]
                     for _, m in miembros.iterrows():
                         res_list.append({
                             "Dia": d_i["n"], "Label": d_i["label"], "Nom_Dia": d_i["nombre"], 
                             "Semana": d_i["semana"], "Empleado": m['nombre'], "Grupo": g,
-                            "Turno_Base": t_f, "Es_Ley": es_ley, "Contrato": dict_descansos[g]
+                            "Turno_Base": t_sem, "Es_Ley": es_ley, "Contrato": dict_descansos[g]
                         })
 
             df_res = pd.DataFrame(res_list)
@@ -125,50 +131,42 @@ if df_raw is not None:
                     t_s = f_sem['Turno_Base'].iloc[0]
                     g_emp.loc[f_sem.index, 'Resultado'] = t_s
                     idx_l = f_sem[f_sem['Es_Ley']].index
-                    if not idx_l.empty: g_emp.loc[idx_l, 'Resultado'] = "DESC. LEY"
+                    if not idx_l.empty:
+                        g_emp.loc[idx_l, 'Resultado'] = "DESC. LEY"
                 f_rows.append(g_emp)
 
             st.session_state['malla_final'] = pd.concat(f_rows)
-            status.update(label="✅ Malla y Auditoría listas.", state="complete")
+            status.update(label="✅ Malla generada con lógica de respaldo activa.", state="complete")
 
+    # --- 4. MÓDULOS DE AUDITORÍA ACTUALIZADOS ---
     if 'malla_final' in st.session_state:
-        df_v = st.session_state['malla_final']
-        tab1, tab2, tab3 = st.tabs(["📅 Malla Operativa", "🔍 Auditoría de Cupos", "⚖️ Auditoría de Descansos"])
+        tab1, tab2, tab3 = st.tabs(["📅 Malla Operativa", "🛡️ Control de Respaldo", "⚖️ Auditoría Personal"])
 
         with tab1:
-            piv = df_v.pivot(index=['Grupo', 'Empleado'], columns='Label', values='Resultado')
+            piv = st.session_state['malla_final'].pivot(index=['Grupo', 'Empleado'], columns='Label', values='Resultado')
             cols = sorted(piv.columns, key=lambda x: int(x.split('-')[0]))
-            
             def styler(v):
                 if 'LEY' in str(v): return 'background-color: #fee2e2; color: #991b1b; font-weight: bold'
                 if v == 'Noche': return 'background-color: #1e293b; color: white'
                 if v == 'AM': return 'background-color: #dcfce7; color: #166534'
                 if v == 'PM': return 'background-color: #e0f2fe; color: #0369a1'
-                return 'color: #94a3b8'
+                return 'color: #94a3b8; font-style: italic'
             st.dataframe(piv[cols].style.map(styler), use_container_width=True)
 
         with tab2:
-            st.subheader("Verificación Diaria de Cobertura")
-            # Agrupar por día y turno para ver si cumplimos el cupo
-            cobertura = df_v[~df_v['Resultado'].str.contains('DESC')].groupby(['Label', 'Resultado'])['Empleado'].count().unstack().fillna(0)
-            st.write("Esta tabla confirma que cada día hay personal en AM, PM y Noche:")
+            st.subheader("Estado de Cobertura por Turno")
+            # Contamos cuántos grupos hay por turno cada día
+            cobertura = st.session_state['malla_final'][~st.session_state['malla_final']['Resultado'].str.contains('DESC')].groupby(['Label', 'Resultado'])['Grupo'].nunique().unstack().fillna(0)
+            st.write("Si un turno tiene más de 1 grupo, significa que un 'Disponible' fue asignado como respaldo.")
             st.dataframe(cobertura, use_container_width=True)
 
         with tab3:
-            st.subheader("Control de Descansos por Grupo y Persona")
+            # (Mismo módulo de auditoría de descansos anterior)
             audit = []
-            for (grupo, emp), data in df_v.groupby(['Grupo', 'Empleado']):
+            for (grupo, emp), data in st.session_state['malla_final'].groupby(['Grupo', 'Empleado']):
                 descansos = len(data[data['Resultado'].str.contains('DESC')])
-                # Obtener la secuencia de turnos por semana
-                semanas_log = data.groupby('Semana')['Turno_Base'].first().tolist()
-                rotacion = " -> ".join(semanas_log)
-                
                 audit.append({
-                    "Grupo": grupo,
-                    "Empleado": emp,
-                    "Día Ley": data['Contrato'].iloc[0],
-                    "Descansos Mes": descansos,
-                    "Rotación Semanal": rotacion,
-                    "Cumplimiento": "✅ OK" if descansos >= len(semanas_mes) else "⚠️ REVISAR"
+                    "Grupo": grupo, "Empleado": emp, "Día Ley": data['Contrato'].iloc[0],
+                    "Descansos Mes": descansos, "Cumplimiento": "✅ OK" if descansos >= len(semanas_mes) else "⚠️ REVISAR"
                 })
             st.table(pd.DataFrame(audit))
