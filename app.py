@@ -6,7 +6,7 @@ from datetime import datetime
 import io
 
 # --- 1. CONFIGURACIÓN ---
-st.set_page_config(page_title="MovilGo Pro - Auditoría Reforma Laboral", layout="wide", page_icon="⚖️")
+st.set_page_config(page_title="MovilGo Pro - Control 4x4", layout="wide", page_icon="⚖️")
 LISTA_TURNOS = ["AM", "PM", "Noche"]
 
 # --- 2. ESTILOS ---
@@ -17,7 +17,6 @@ st.markdown("""
     .stApp { background-color: #f8fafc; }
     .metric-card { background-color: white; padding: 15px; border-radius: 10px; border-top: 5px solid #1e293b; text-align: center; box-shadow: 0 2px 4px rgba(0,0,0,0.05); }
     .metric-val { font-size: 1.5rem; font-weight: bold; color: #1e293b; }
-    .metric-title { font-size: 0.8rem; color: #64748b; text-transform: uppercase; }
     </style>
     """, unsafe_allow_html=True)
 
@@ -54,14 +53,15 @@ df_raw = load_data()
 
 if df_raw is not None:
     with st.sidebar:
-        st.header("⚙️ Parámetros Operativos")
+        st.header("⚙️ Parámetros")
         ano_sel = st.selectbox("Año", [2025, 2026], index=1)
         meses = ["Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio", "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"]
         mes_sel = st.selectbox("Mes", meses, index=datetime.now().month - 1)
         mes_num = meses.index(mes_sel) + 1
         cargo_sel = st.selectbox("Cargo", sorted(df_raw['cargo'].unique()))
         cupo_manual = st.number_input("Cupo por Turno", 1, 20, 2)
-        peso_estabilidad = st.slider("Rigidez de Bloques (Estabilidad)", 50, 300, 150)
+        st.write("**Estabilidad de Bloques**")
+        peso_estabilidad = st.select_slider("Nivel de Rigidez", options=[50, 100, 150, 200, 300], value=150, help="A mayor rigidez, menos rotación de turnos durante la semana.")
 
     num_dias = calendar.monthrange(ano_sel, mes_num)[1]
     dias_range = range(1, num_dias + 1)
@@ -69,13 +69,12 @@ if df_raw is not None:
     dias_info = [{"n": d, "nombre": dias_es[datetime(ano_sel, mes_num, d).weekday()], "semana": datetime(ano_sel, mes_num, d).isocalendar()[1], "label": f"{d}-{dias_es[datetime(ano_sel, mes_num, d).weekday()]}"} for d in dias_range]
     semanas_mes = sorted(list(set([d["semana"] for d in dias_info])))
 
-    if st.button(f"🚀 GENERAR MALLA Y AUDITORÍA: {cargo_sel}"):
-        with st.status("Ejecutando motor de optimización legal...", expanded=True) as status:
+    if st.button(f"🚀 GENERAR MALLA 4x4: {cargo_sel}"):
+        with st.status("Optimizando cobertura y descansos legales...", expanded=True) as status:
             df_f = df_raw[df_raw['cargo'] == cargo_sel].copy()
             nombres = df_f['nombre'].tolist()
-            prog = st.progress(0)
             
-            prob = LpProblem("MovilGo_Laboral", LpMaximize)
+            prob = LpProblem("Malla_4x4", LpMaximize)
             asig = LpVariable.dicts("Asig", (nombres, dias_range, LISTA_TURNOS), cat='Binary')
             mantiene = LpVariable.dicts("Mantiene", (nombres, range(2, num_dias + 1), LISTA_TURNOS), cat='Binary')
             
@@ -103,10 +102,10 @@ if df_raw is not None:
                         prob += asig[e][d]["Noche"] + asig[e][d+1]["AM"] <= 1
                         prob += asig[e][d]["Noche"] + asig[e][d+1]["PM"] <= 1
 
+                # Mínimo 2 descansos en día de contrato
                 d_ley_m = [di["n"] for di in dias_info if di["nombre"] == dia_ley_pref]
                 prob += lpSum([asig[e][d][t] for d in d_ley_m for t in LISTA_TURNOS]) <= (len(d_ley_m) - 2)
 
-            prog.progress(50)
             prob.solve(PULP_CBC_CMD(msg=0, timeLimit=45, gapRel=0.05))
 
             if LpStatus[prob.status] in ['Optimal', 'Not Solved']:
@@ -116,11 +115,7 @@ if df_raw is not None:
                         t_asig = "---"
                         for t in LISTA_TURNOS:
                             if value(asig[e][di["n"]][t]) == 1: t_asig = t
-                        res_list.append({
-                            "Dia": di["n"], "Label": di["label"], "Nom_Dia": di["nombre"], 
-                            "Semana": di["semana"], "Empleado": e, "Turno": t_asig, 
-                            "Contrato": df_f[df_f['nombre']==e]['descanso_ley'].values[0]
-                        })
+                        res_list.append({"Dia": di["n"], "Label": di["label"], "Nom_Dia": di["nombre"], "Semana": di["semana"], "Empleado": e, "Turno": t_asig, "Contrato": df_f[df_f['nombre']==e]['descanso_ley'].values[0]})
                 
                 df_res = pd.DataFrame(res_list)
                 lista_final = []
@@ -130,83 +125,65 @@ if df_raw is not None:
                     lv = str(grupo['Contrato'].iloc[0]).lower()
                     dl = "Vie" if "vie" in lv else ("Sab" if "sab" in lv else "Dom")
                     
-                    semanas_a_compensar = []
-                    for sem in semanas_mes:
-                        dia_l_sem = grupo[(grupo['Semana'] == sem) & (grupo['Nom_Dia'] == dl)]
-                        if not dia_l_sem.empty and dia_l_sem['Turno'].iloc[0] in LISTA_TURNOS:
-                            semanas_a_compensar.append(sem)
-
+                    # 1. Marcar 2 DESC. LEY obligatorios
                     idx_l = grupo[(grupo['Turno'] == '---') & (grupo['Nom_Dia'] == dl)].head(2).index
                     grupo.loc[idx_l, 'Turno'] = 'DESC. LEY'
 
-                    for sem_trabajada in semanas_a_compensar:
-                        idx_comp = grupo[(grupo['Semana'] == sem_trabajada + 1) & (grupo['Turno'] == '---') & (~grupo['Nom_Dia'].isin(['Vie','Sab','Dom']))].head(1).index
+                    # 2. Identificar semanas sin descanso en día de ley
+                    semanas_trabajadas_ley = []
+                    for sem in semanas_mes:
+                        dia_l_sem = grupo[(grupo['Semana'] == sem) & (grupo['Nom_Dia'] == dl)]
+                        if not dia_l_sem.empty and dia_l_sem['Turno'].iloc[0] in LISTA_TURNOS:
+                            semanas_trabajadas_ley.append(sem)
+
+                    # 3. Asignar COMPENSATORIOS (Uno por semana trabajada, no juntos)
+                    for sem_t in semanas_trabajadas_ley:
+                        # Buscar en la semana siguiente (evitando fin de semana)
+                        idx_comp = grupo[(grupo['Semana'] == sem_t + 1) & (grupo['Turno'] == '---') & (~grupo['Nom_Dia'].isin(['Vie','Sab','Dom']))].head(1).index
                         if not idx_comp.empty:
                             grupo.loc[idx_comp, 'Turno'] = 'DESC. COMPENSATORIO'
 
+                    # 4. GARANTÍA DE CUOTA: Si no tiene 4 descansos, completar con ADICIONALES
+                    descansos_actuales = len(grupo[grupo['Turno'].str.contains('DESC')])
+                    if descansos_actuales < 4:
+                        faltantes = 4 - descansos_actuales
+                        idx_libres = grupo[(grupo['Turno'] == '---') & (~grupo['Nom_Dia'].isin(['Vie','Sab','Dom']))].head(faltantes).index
+                        grupo.loc[idx_libres, 'Turno'] = 'DESC. ADICIONAL'
+
+                    # 5. Etiqueta POST-NOCHE
                     for i in range(len(grupo)-1):
                         if grupo.iloc[i]['Turno'] == 'Noche' and grupo.iloc[i+1]['Turno'] != 'Noche':
                             actual = grupo.iloc[i+1]['Turno']
                             if 'DESC' in str(actual) or actual == '---':
-                                etiqueta = f"POST-NOCHE ({actual})" if actual != '---' else "DESC. POST-NOCHE"
-                                grupo.iloc[i+1, grupo.columns.get_loc('Turno')] = etiqueta
+                                grupo.iloc[i+1, grupo.columns.get_loc('Turno')] = f"POST-NOCHE ({actual})" if actual != '---' else "DESC. POST-NOCHE"
 
                     grupo.loc[grupo['Turno'] == '---', 'Turno'] = 'DISPONIBILIDAD'
                     lista_final.append(grupo)
                 
                 st.session_state['df_final'] = pd.concat(lista_final)
-                prog.progress(100)
-                status.update(label="✅ Análisis de Reforma y Malla Completados.", state="complete", expanded=False)
+                status.update(label="✅ Malla generada con cuota de 4 descansos.", state="complete", expanded=False)
 
     if 'df_final' in st.session_state:
         df_v = st.session_state['df_final']
+        st.subheader("📊 Resumen de Descansos (Objetivo 4 por Mes)")
         
-        # --- BLOQUE DE INDICADORES (KPIs) ---
-        st.subheader("📊 Resumen de Control")
-        k1, k2, k3, k4 = st.columns(4)
-        with k1: st.markdown(f"<div class='metric-card'><div class='metric-title'>Descansos Ley</div><div class='metric-val'>{len(df_v[df_v['Turno'] == 'DESC. LEY'])}</div></div>", unsafe_allow_html=True)
-        with k2: st.markdown(f"<div class='metric-card'><div class='metric-title'>Compensatorios</div><div class='metric-val'>{len(df_v[df_v['Turno'] == 'DESC. COMPENSATORIO'])}</div></div>", unsafe_allow_html=True)
-        with k3: st.markdown(f"<div class='metric-card'><div class='metric-title'>En Disponibilidad</div><div class='metric-val'>{len(df_v[df_v['Turno'] == 'DISPONIBILIDAD'])}</div></div>", unsafe_allow_html=True)
-        with k4: st.markdown(f"<div class='metric-card'><div class='metric-title'>Noches Programadas</div><div class='metric-val'>{len(df_v[df_v['Turno'] == 'Noche'])}</div></div>", unsafe_allow_html=True)
-
-        tab_m, tab_audit, tab_repo = st.tabs(["📅 Malla Operativa", "⚖️ Auditoría Reforma Laboral", "📥 Reportes"])
-
+        tab_m, tab_audit = st.tabs(["📅 Malla Operativa", "⚖️ Auditoría de Descansos"])
+        
         with tab_m:
             def style_v(v):
                 if 'LEY' in v: return 'background-color: #fee2e2; color: #991b1b; font-weight: bold'
                 if 'COMPENSATORIO' in v: return 'background-color: #fef9c3; color: #854d0e; font-weight: bold'
+                if 'ADICIONAL' in v: return 'background-color: #e0f2fe; color: #0369a1; font-weight: bold'
                 if 'POST-NOCHE' in v: return 'background-color: #dcfce7; color: #166534; font-weight: bold'
                 if v == 'Noche': return 'background-color: #1e293b; color: white'
-                if v == 'DISPONIBILIDAD': return 'color: #3b82f6'
                 return ''
             
             m_piv = df_v.pivot(index='Empleado', columns='Label', values='Turno')
-            cols_ord = sorted(m_piv.columns, key=lambda x: int(x.split('-')[0]))
-            st.dataframe(m_piv[cols_ord].style.map(style_v), use_container_width=True)
+            st.dataframe(m_piv[sorted(m_piv.columns, key=lambda x: int(x.split('-')[0]))].style.map(style_v), use_container_width=True)
 
         with tab_audit:
-            st.markdown("### 📋 Verificación de Cumplimiento (Ley 2101 / Reforma)")
-            audit_list = []
+            audit = []
             for e, g in df_v.groupby("Empleado"):
-                total_desc = len(g[g['Turno'].str.contains('DESC')])
-                d_ley = len(g[g['Turno'].str.contains('LEY')])
-                d_comp = len(g[g['Turno'].str.contains('COMPENSATORIO')])
-                
-                audit_list.append({
-                    "Empleado": e,
-                    "Día de Contrato": g['Contrato'].iloc[0],
-                    "Descansos de Ley (Min 2)": d_ley,
-                    "Compensatorios (1 x sem trabajada)": d_comp,
-                    "Total Descansos Mes": total_desc,
-                    "Estado": "✅ CUMPLE" if total_desc >= 4 else "⚠️ REVISAR"
-                })
-            
-            df_audit = pd.DataFrame(audit_list)
-            st.table(df_audit)
-
-        with tab_repo:
-            output = io.BytesIO()
-            with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-                m_piv[cols_ord].to_excel(writer, sheet_name='Malla_Final')
-                df_audit.to_excel(writer, sheet_name='Auditoria_Legal', index=False)
-            st.download_button("📥 Descargar Reporte Completo (Excel)", output.getvalue(), f"Malla_{cargo_sel}_{mes_sel}.xlsx")
+                d_totales = len(g[g['Turno'].str.contains('DESC')])
+                audit.append({"Empleado": e, "Contrato": g['Contrato'].iloc[0], "Total Descansos": d_totales, "Estado": "✅ CUMPLE (4+)" if d_totales >= 4 else "⚠️ REVISAR"})
+            st.table(pd.DataFrame(audit))
