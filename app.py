@@ -6,7 +6,7 @@ from datetime import datetime
 
 # --- 1. CONFIGURACIÓN ---
 st.set_page_config(page_title="MovilGo Pro - Respaldo Dinámico", layout="wide", page_icon="🛡️")
-LISTA_TURNOS = ["AM", "PM", "Noche"]
+LISTA_TURNOS = ["T1", "T2", "T3"]
 
 # --- 2. LOGIN ---
 if 'auth' not in st.session_state: st.session_state['auth'] = False
