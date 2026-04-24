@@ -156,15 +156,27 @@ def run_app():
                 
                 if st.button("💾 GUARDAR MALLA EN GITHUB"):
                     if confirmar:
-                        df_hist = df_hist[~((df_hist['Mes'] == mes_sel) & (df_hist['Año'] == ano_sel) & (df_hist['Tipo'] == "Técnica"))]
+                        # 1. Eliminar anterior para evitar duplicados en el mismo archivo
+                        df_hist = df_hist[~((df_hist['Mes'] == mes_sel) & 
+                                           (df_hist['Año'] == ano_sel) & 
+                                           (df_hist['Tipo'] == "Técnica"))]
+                        
+                        # 2. Convertir DataFrame a JSON string (formato compacto)
+                        malla_json = res.to_json(orient='records') # 'records' es más estable
+                        
                         nueva_fila = pd.DataFrame([{
-                            "Mes": mes_sel, "Año": ano_sel, "Tipo": "Técnica",
+                            "Mes": mes_sel, 
+                            "Año": ano_sel, 
+                            "Tipo": "Técnica",
                             "Fecha": datetime.now().strftime("%Y-%m-%d %H:%M"),
-                            "Datos_JSON": res.to_json()
+                            "Datos_JSON": malla_json
                         }])
-                        df_hist = pd.concat([df_hist, nueva_fila], ignore_index=True)
-                        if guardar_excel_en_github(df_hist, "historico_mallas.xlsx"):
-                            st.success("✅ Malla guardada exitosamente.")
+                        
+                        # 3. Consolidar y subir
+                        df_hist_final = pd.concat([df_hist, nueva_fila], ignore_index=True)
+                        
+                        if guardar_excel_en_github(df_hist_final, "historico_mallas.xlsx"):
+                            st.success("✅ ¡Malla sincronizada con GitHub!")
                             st.balloons()
                     else:
                         st.error("Debe confirmar para reemplazar.")
