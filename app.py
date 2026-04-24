@@ -13,36 +13,34 @@ st.set_page_config(
     page_icon="🚌"
 )
 
-# --- 2. RUTA DEL LOGO (COINCIDENCIA EXACTA CON TU GITHUB) ---
-# Cambiado de logo.png a MovilGo.png para que coincida con tu captura
+# --- 2. RUTA DEL LOGO EN TU REPOSITORIO DE GITHUB ---
+# Asegúrate de que el archivo MovilGo.png esté en la raíz, junto a app.py
 LOGO_PATH = "MovilGo.png" 
 
-# --- 3. ESTILOS CSS DE VANGUARDIA ---
+# --- 3. ESTILOS CSS DE VANGUARDIA (Corrección para Logo Grande) ---
 st.markdown(f"""
     <style>
+    /* Fondo general */
     .main {{ background-color: #f8fafc; }}
     
     /* Login Card */
     .login-card {{
         background-color: white;
-        padding: 3rem;
+        padding: 4rem; /* Más espacio */
         border-radius: 20px;
-        box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1);
+        box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.25); /* Sombra más fuerte */
         border: 1px solid #e5e7eb;
         text-align: center;
-        max-width: 450px;
+        max-width: 500px; /* Un poco más ancha */
         margin: auto;
+        margin-top: 50px;
     }}
 
-    /* Banner Principal */
-    .main-banner {{
-        background: linear-gradient(135deg, #064e3b 0%, #10b981 100%);
-        padding: 3.5rem;
-        border-radius: 25px;
-        color: white;
-        margin-bottom: 2rem;
-        text-align: center;
-        box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1);
+    /* CSS para centrar la imagen perfectamente */
+    .stImage > img {{
+        display: block;
+        margin-left: auto;
+        margin-right: auto;
     }}
 
     /* Botones Modernos */
@@ -54,6 +52,7 @@ st.markdown(f"""
         font-weight: 700;
         border: none;
         padding: 0.8rem;
+        font-size: 1.1rem;
         transition: all 0.3s ease;
     }}
     .stButton>button:hover {{
@@ -62,22 +61,20 @@ st.markdown(f"""
         box-shadow: 0 10px 15px -3px rgba(16, 185, 129, 0.4);
     }}
 
-    /* Estilo de las Tabs */
-    .stTabs [data-baseweb="tab-list"] {{ gap: 10px; }}
-    .stTabs [data-baseweb="tab"] {{
-        background-color: #f1f5f9;
-        border-radius: 10px 10px 0 0;
-        padding: 12px 24px;
-        font-weight: 600;
-    }}
-    .stTabs [aria-selected="true"] {{ 
-        background-color: #10b981 !important; 
-        color: white !important; 
+    /* Banner Principal de Bienvenida */
+    .main-banner {{
+        background: linear-gradient(135deg, #064e3b 0%, #10b981 100%);
+        padding: 3.5rem;
+        border-radius: 25px;
+        color: white;
+        margin-bottom: 2rem;
+        text-align: center;
+        box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1);
     }}
     </style>
 """, unsafe_allow_html=True)
 
-# --- 4. FUNCIONES CORE ---
+# --- 4. FUNCIONES CORE (Carga de Datos) ---
 @st.cache_data
 def load_base():
     try:
@@ -90,6 +87,7 @@ def load_base():
     except Exception:
         return None
 
+# Función para colorear las celdas de la malla
 def estilo_celdas(v):
     v = str(v)
     if 'DESC' in v: return 'background-color: #fee2e2; color: #991b1b; font-weight: bold; border: 1px solid #fecaca'
@@ -98,22 +96,25 @@ def estilo_celdas(v):
     if 'T2' in v: return 'background-color: #e0f2fe; color: #0369a1; border: 1px solid #bae6fd'
     return 'color: #94a3b8; font-style: italic'
 
-# --- 5. SISTEMA DE LOGIN ---
+# --- 5. SISTEMA DE LOGIN (Modificación del Logo) ---
 if 'auth' not in st.session_state: st.session_state['auth'] = False
 
 if not st.session_state['auth']:
     st.markdown("<br><br>", unsafe_allow_html=True)
-    _, col_login, _ = st.columns([1, 1.5, 1])
+    _, col_login, _ = st.columns([1, 1.8, 1]) # Columnas ajustadas para centrar
     with col_login:
         st.markdown('<div class="login-card">', unsafe_allow_html=True)
         
-        # BUSCAR EL LOGO EN EL REPOSITORIO
+        # MOSTRAR EL LOGO GRANDE Y CENTRADO
         if os.path.exists(LOGO_PATH):
-            st.image(LOGO_PATH, width=280)
+            # Cambiado width de 280 a 350 (más grande) y centrado con CSS
+            st.image(LOGO_PATH, width=350)
         else:
             st.markdown("<h1 style='color:#10b981;'>GREEN MÓVIL</h1>", unsafe_allow_html=True)
             
-        st.markdown("<h2 style='color:#064e3b;'>MovilGo Admin</h2>", unsafe_allow_html=True)
+        st.markdown("<h2 style='color:#064e3b; margin-top: 15px;'>MovilGo Admin</h2>", unsafe_allow_html=True)
+        st.markdown("<p style='color:#718096; margin-bottom: 25px;'>Control de Operaciones y Planta Técnica</p>", unsafe_allow_html=True)
+        
         with st.form("Login"):
             u = st.text_input("Usuario Corporativo")
             p = st.text_input("Contraseña", type="password")
@@ -126,18 +127,20 @@ if not st.session_state['auth']:
         st.markdown('</div>', unsafe_allow_html=True)
     st.stop()
 
-# --- 6. NAVEGACIÓN Y CARGA DE DATOS ---
+# --- 6. PANEL DE CONTROL (Navegación) ---
+# Carga de datos una vez logueado
 df_raw = load_base()
 
 with st.sidebar:
     if os.path.exists(LOGO_PATH):
+        # Mantenemos el logo proporcional en la barra lateral
         st.image(LOGO_PATH, use_container_width=True)
     st.markdown("<hr>", unsafe_allow_html=True)
     menu = st.radio("MENÚ PRINCIPAL", ["🏠 Inicio", "📊 Gestión de Mallas", "👥 Base de Datos"])
     
     st.divider()
     meses = ["Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio", "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"]
-    mes_sel = st.selectbox("Mes", meses, index=datetime.now().month - 1)
+    mes_sel = st.selectbox("Mes de Gestión", meses, index=datetime.now().month - 1)
     ano_sel = st.selectbox("Año", [2025, 2026], index=1)
     mes_num = meses.index(mes_sel) + 1
     
@@ -150,43 +153,44 @@ if menu == "🏠 Inicio":
     st.markdown(f"""
         <div class="main-banner">
             <h1>Bienvenido Richard Guevara</h1>
-            <p>Gestión Operativa MovilGo Pro | {mes_sel} {ano_sel}</p>
+            <p>Panel Central de Gestión de Personal y Turnos - {mes_sel} {ano_sel}</p>
         </div>
     """, unsafe_allow_html=True)
 
+    # Métricas clave
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Personal Activo", "145", "Registrados")
-    c2.metric("Disponibilidad", "99.8%", "Óptimo")
-    c3.metric("Novedades", "0", "Alertas")
+    c1.metric("Personal Activo", "145 Pers.", "Programados")
+    c2.metric("Disponibilidad", "99.8%", "Flota Óptima")
+    c3.metric("Novedades", "0", "Sin Alertas")
     c4.metric("Estado Malla", "Sincronizado", "OK")
 
-    st.markdown("### 🚀 Accesos Directos")
+    st.markdown("### 🚀 Accesos Directos a Mallas")
     col_a, col_b = st.columns(2)
     with col_a:
         with st.container(border=True):
             st.markdown("#### 🏭 Planta Técnica")
-            st.write("Generación de turnos T1-T2-T3 para Masters y Técnicos.")
+            st.write("Generación automatizada de turnos rotativos (T1-T2-T3) para Masters y Técnicos A/B.")
     with col_b:
         with st.container(border=True):
-            st.markdown("#### 👥 Auxiliares")
-            st.write("Gestión de equipos 10/10 para atención al público.")
+            st.markdown("#### 👥 Auxiliares 10/10")
+            st.write("Configuración de equipos de abordaje para atención al público.")
 
-# --- 8. MÓDULO GESTIÓN DE MALLAS ---
+# --- 8. MÓDULO GESTIÓN DE MALLAS (Lógica Completa) ---
 elif menu == "📊 Gestión de Mallas":
     if df_raw is None:
-        st.error("❌ Archivo 'empleados.xlsx' no encontrado.")
+        st.error("❌ Archivo 'empleados.xlsx' no encontrado. Súbelo a la carpeta raíz de GitHub.")
     else:
         tab1, tab2 = st.tabs(["🏭 Planta Operativa", "👥 Auxiliares 10/10"])
         DIAS_SEMANA = ["Lunes", "Martes", "Miercoles", "Jueves", "Viernes", "Sabado", "Domingo"]
         
         with tab1:
-            st.subheader("Configuración Planta Técnica")
+            st.subheader("Configuración Planta Técnica (Masters y Técnicos)")
             c_config = st.columns(3)
             m_req = c_config[0].number_input("Masters", 1, 5, 2)
             ta_req = c_config[1].number_input("Técnicos A", 1, 15, 7)
             tb_req = c_config[2].number_input("Técnicos B", 1, 10, 3)
 
-            with st.expander("📅 Grupos y Descansos", expanded=True):
+            with st.expander("📅 Grupos y Descansos Legales", expanded=True):
                 n_map, d_map, t_map = {}, {}, {}
                 cols_g = st.columns(4)
                 for i in range(4):
@@ -197,12 +201,14 @@ elif menu == "📊 Gestión de Mallas":
                         es_disp = st.checkbox("Disponibilidad", value=(i==3), key=f"t1_t_{i}")
                         n_map[g_id] = n_s; d_map[n_s] = d_s; t_map[n_s] = "DISP" if es_disp else "ROTA"
 
-            if st.button("⚡ GENERAR MALLA TÉCNICA"):
+            if st.button("⚡ GENERAR MALLA TÉCNICA (OPTIMIZADA)"):
+                # Separar personal por cargos
                 mas_p = df_raw[df_raw['cargo'].str.contains('Master', case=False)].copy()
                 tca_p = df_raw[df_raw['cargo'].str.contains('Tecnico A', case=False)].copy()
                 tcb_p = df_raw[df_raw['cargo'].str.contains('Tecnico B', case=False)].copy()
                 
                 c_list = []
+                # Asignar personal a células
                 for g_id, g_name in n_map.items():
                     for _ in range(m_req):
                         if not mas_p.empty: c_list.append({**mas_p.iloc[0].to_dict(), "grupo": g_name}); mas_p = mas_p.iloc[1:]
@@ -213,18 +219,24 @@ elif menu == "📊 Gestión de Mallas":
                 
                 df_celulas = pd.DataFrame(c_list)
                 g_rotan = [g for g in n_map.values() if t_map[g] == "ROTA"]
+                
+                # Definir fechas del mes
                 num_dias = calendar.monthrange(ano_sel, mes_num)[1]
                 d_info = [{"n": d, "nom": DIAS_SEMANA[datetime(ano_sel, mes_num, d).weekday()], "sem": datetime(ano_sel, mes_num, d).isocalendar()[1], "label": f"{d:02d}-{DIAS_SEMANA[datetime(ano_sel, mes_num, d).weekday()][:3]}"} for d in range(1, num_dias + 1)]
                 semanas = sorted(list(set([d["sem"] for d in d_info])))
 
+                # Optimización de turnos con PuLP
                 prob = LpProblem("MovilGo_Rota", LpMinimize)
                 asig = LpVariable.dicts("Asig", (g_rotan, semanas, ["T1","T2","T3"]), cat='Binary')
+                # Restricciones
                 for s in semanas:
                     for t in ["T1","T2","T3"]: prob += lpSum([asig[g][s][t] for g in g_rotan]) == 1
                     for g in g_rotan: prob += lpSum([asig[g][s][t] for t in ["T1","T2","T3"]]) == 1
                 prob.solve(PULP_CBC_CMD(msg=0))
+                # Resultados
                 res_semanal = {(g, s): t for g in g_rotan for s in semanas for t in ["T1","T2","T3"] if value(asig[g][s][t]) == 1}
 
+                # Construir la matriz final día a día
                 final_rows = []
                 g_disp_name = [g for g in n_map.values() if t_map[g] == "DISP"][0]
 
@@ -235,6 +247,7 @@ elif menu == "📊 Gestión de Mallas":
                         if d_i["nom"] == d_map[g]: hoy_labels[g] = "DESC. LEY"
                         else: hoy_labels[g] = res_semanal.get((g, d_i["sem"]), "T1")
                     
+                    # El grupo de disponibilidad cubre al grupo que descansa
                     label_disp = hoy_labels.get(desc_hoy[0], "T1") if desc_hoy else "T1"
                     
                     for g in n_map.values():
@@ -242,24 +255,26 @@ elif menu == "📊 Gestión de Mallas":
                         for _, m in df_celulas[df_celulas['grupo'] == g].iterrows():
                             final_rows.append({"Grupo": g, "Empleado": m['nombre'], "Cargo": m['cargo'], "Label": d_i["label"], "Turno": val})
 
-                df_f = pd.DataFrame(final_rows).pivot(index=['Grupo', 'Empleado', 'Cargo'], columns='Label', values='Turno')
-                cols_sorted = sorted(df_f.columns, key=lambda x: int(x.split('-')[0]))
-                st.dataframe(df_f[cols_sorted].style.map(estilo_celdas), use_container_width=True)
+                # Generar el DataFrame pivoteado
+                df_piv = pd.DataFrame(final_rows).pivot(index=['Grupo', 'Empleado', 'Cargo'], columns='Label', values='Turno')
+                cols_sorted = sorted(df_piv.columns, key=lambda x: int(x.split('-')[0]))
+                st.dataframe(df_piv[cols_sorted].style.map(estilo_celdas), use_container_width=True)
 
         with tab2:
-            st.subheader("Malla Auxiliares (10/10)")
+            st.subheader("Gestión de Auxiliares (Equipos de Abordaje)")
             df_ax = df_raw[df_raw['cargo'].str.contains("Auxiliar", case=False, na=False)].copy() if df_raw is not None else pd.DataFrame()
             if not df_ax.empty:
-                with st.expander("Configurar Equipos", expanded=False):
+                with st.expander("Configurar Rotación Equipos", expanded=False):
                     ax_n_map, ax_d_map = {}, {}
                     c_ax = st.columns(5)
                     for i in range(5):
                         with c_ax[i]:
-                            ne = st.text_input(f"Equipo {i+1}", f"EQ-{chr(65+i)}", key=f"ax_n_{i}")
+                            ne = st.text_input(f"Eq {i+1}", f"EQ-{chr(65+i)}", key=f"ax_n_{i}")
                             de = st.selectbox(f"Descanso", DIAS_SEMANA, index=i, key=f"ax_d_{i}")
                             ax_n_map[i] = ne; ax_d_map[ne] = de
 
                 if st.button("⚡ GENERAR MALLA AUXILIARES"):
+                    # Asignar equipo por rotación simple
                     df_ax['equipo'] = [ax_n_map[i % 5] for i in range(len(df_ax))]
                     num_dias = calendar.monthrange(ano_sel, mes_num)[1]
                     d_info_ax = [{"nom": DIAS_SEMANA[datetime(ano_sel, mes_num, d).weekday()], "sem": datetime(ano_sel, mes_num, d).isocalendar()[1], "label": f"{d:02d}-{DIAS_SEMANA[datetime(ano_sel, mes_num, d).weekday()][:3]}"} for d in range(1, num_dias + 1)]
@@ -267,6 +282,7 @@ elif menu == "📊 Gestión de Mallas":
                     rows_ax = []
                     pool = ["T1", "T2", "T1", "T2", "DISPO"]
                     for d_i in d_info_ax:
+                        # Desplazar turnos por semana
                         shift = d_i["sem"] % 5
                         turnos_hoy = pool[-shift:] + pool[:-shift]
                         for idx, eq in enumerate(ax_n_map.values()):
@@ -277,13 +293,17 @@ elif menu == "📊 Gestión de Mallas":
                     piv_ax = pd.DataFrame(rows_ax).pivot(index=['Equipo', 'Empleado'], columns='Label', values='Turno')
                     cols_ax_sorted = sorted(piv_ax.columns, key=lambda x: int(x.split('-')[0]))
                     st.dataframe(piv_ax[cols_ax_sorted].style.map(estilo_celdas), use_container_width=True)
+            else:
+                st.warning("No hay personal registrado con el cargo de 'Auxiliar'.")
 
 # --- 9. MÓDULO BASE DE DATOS ---
 elif menu == "👥 Base de Datos":
     st.header("Base de Datos Maestra")
     if df_raw is not None:
+        st.write(f"Se encontraron **{len(df_raw)}** empleados registrados.")
         st.dataframe(df_raw, use_container_width=True)
+        # Botón de descarga
         buffer = io.BytesIO()
         with pd.ExcelWriter(buffer, engine='xlsxwriter') as writer:
             df_raw.to_excel(writer, index=False)
-        st.download_button("📥 Descargar Base de Datos", data=buffer.getvalue(), file_name="respaldo_base.xlsx")
+        st.download_button("📥 Descargar Base de Datos", data=buffer.getvalue(), file_name="respaldo_base_operativa.xlsx")
