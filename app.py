@@ -3,6 +3,7 @@ import pandas as pd
 from pulp import *
 import calendar
 from datetime import datetime
+import io
 
 # --- 1. CONFIGURACIÓN DE PÁGINA ---
 st.set_page_config(
@@ -11,66 +12,62 @@ st.set_page_config(
     page_icon="🚌"
 )
 
-# ID DE TU LOGO (Extraído de tu link)
-LOGO_URL = "https://drive.google.com/16oqiPZoHcGcfmJIuOntRyFywnHF48sd1/view?usp=drive_link"
+# --- 2. PARAMETROS DE IDENTIDAD ---
+# URL de visualización directa para Google Drive
+LOGO_URL = "https://drive.google.com/https://drive.google.com/file/d/16oqiPZoHcGcfmJIuOntRyFywnHF48sd1/view?usp=drive_link"
 
-# --- 2. ESTILOS CSS PERSONALIZADOS (Vanguardia) ---
+# --- 3. ESTILOS CSS (Vanguardia y UX) ---
 st.markdown(f"""
     <style>
-    /* Fondo general */
     .main {{ background-color: #f8fafc; }}
     
-    /* Login Box mejorado */
-    .login-container {{
+    /* Login Box */
+    .login-card {{
         background-color: white;
         padding: 3rem;
         border-radius: 20px;
         box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1);
         border: 1px solid #e5e7eb;
         text-align: center;
+        max-width: 450px;
+        margin: auto;
     }}
 
-    /* Botones con estilo Green Movil */
-    .stButton>button {{
-        width: 100%;
-        border-radius: 10px;
-        background-color: #10b981;
-        color: white;
-        font-weight: 600;
-        border: none;
-        padding: 0.7rem;
-        transition: all 0.3s ease;
-    }}
-    .stButton>button:hover {{
-        background-color: #059669;
-        transform: translateY(-2px);
-        box-shadow: 0 4px 12px rgba(16, 185, 129, 0.3);
-    }}
-
-    /* Banner Principal */
+    /* Banner Principal Estilo Corporativo */
     .main-banner {{
         background: linear-gradient(135deg, #064e3b 0%, #10b981 100%);
-        padding: 3rem;
-        border-radius: 20px;
+        padding: 3.5rem;
+        border-radius: 25px;
         color: white;
         margin-bottom: 2rem;
         text-align: center;
         box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1);
     }}
 
-    /* Estilo para las métricas */
-    [data-testid="stMetricValue"] {{ 
-        color: #064e3b !important; 
-        font-weight: bold !important;
+    /* Botones Modernos */
+    .stButton>button {{
+        width: 100%;
+        border-radius: 12px;
+        background-color: #10b981;
+        color: white;
+        font-weight: 700;
+        border: none;
+        padding: 0.8rem;
+        transition: all 0.3s ease;
     }}
-    
-    /* Tabs personalizados */
-    .stTabs [data-baseweb="tab-list"] {{ gap: 8px; }}
+    .stButton>button:hover {{
+        background-color: #059669;
+        transform: translateY(-2px);
+        box-shadow: 0 10px 15px -3px rgba(16, 185, 129, 0.4);
+    }}
+
+    /* Estilo de las Tabs */
+    .stTabs [data-baseweb="tab-list"] {{ gap: 10px; }}
     .stTabs [data-baseweb="tab"] {{
-        background-color: #e2e8f0;
-        border-radius: 8px 8px 0 0;
-        padding: 10px 20px;
-        color: #475569;
+        background-color: #f1f5f9;
+        border-radius: 10px 10px 0 0;
+        padding: 12px 24px;
+        font-weight: 600;
     }}
     .stTabs [aria-selected="true"] {{ 
         background-color: #10b981 !important; 
@@ -79,7 +76,7 @@ st.markdown(f"""
     </style>
 """, unsafe_allow_html=True)
 
-# --- 3. FUNCIONES DE APOYO ---
+# --- 4. FUNCIONES CORE ---
 @st.cache_data
 def load_base():
     try:
@@ -88,128 +85,117 @@ def load_base():
         c_nom = next((c for c in df.columns if 'nom' in c or 'emp' in c), "nombre")
         c_car = next((c for c in df.columns if 'car' in c), "cargo")
         return df.rename(columns={c_nom: 'nombre', c_car: 'cargo'})
-    except Exception:
+    except Exception as e:
         return None
 
-def estilo_malla(v):
+def estilo_celdas(v):
     v = str(v)
     if 'DESC' in v: return 'background-color: #fee2e2; color: #991b1b; font-weight: bold; border: 1px solid #fecaca'
     if 'T3' in v: return 'background-color: #1e293b; color: white; font-weight: bold'
     if 'T1' in v: return 'background-color: #dcfce7; color: #166534; border: 1px solid #bbf7d0'
     if 'T2' in v: return 'background-color: #e0f2fe; color: #0369a1; border: 1px solid #bae6fd'
+    if 'DISP' in v: return 'background-color: #fef9c3; color: #854d0e; border: 1px solid #fef08a'
     return 'color: #94a3b8; font-style: italic'
 
-# --- 4. SISTEMA DE LOGIN ---
+# --- 5. SISTEMA DE AUTENTICACIÓN ---
 if 'auth' not in st.session_state: st.session_state['auth'] = False
 
 if not st.session_state['auth']:
-    _, col_login, _ = st.columns([1, 1.2, 1])
+    st.markdown("<br><br>", unsafe_allow_html=True)
+    _, col_login, _ = st.columns([1, 1.5, 1])
     with col_login:
-        st.markdown('<div class="login-container">', unsafe_allow_html=True)
-        st.image(LOGO_URL, width=250)
-        st.markdown("<h2 style='color:#064e3b; margin-top:10px;'>MovilGo Admin</h2>", unsafe_allow_html=True)
-        st.markdown("<p style='color:#64748b;'>Control de Operaciones Green Móvil</p>", unsafe_allow_html=True)
+        st.markdown('<div class="login-card">', unsafe_allow_html=True)
+        st.image(LOGO_URL, width=280)
+        st.markdown("<h2 style='color:#064e3b;'>MovilGo Admin</h2>", unsafe_allow_html=True)
         with st.form("Login"):
-            u = st.text_input("Usuario")
+            u = st.text_input("Usuario Corporativo")
             p = st.text_input("Contraseña", type="password")
-            if st.form_submit_button("INICIAR SESIÓN"):
+            if st.form_submit_button("INGRESAR AL PANEL"):
                 if u == "richard.guevara@greenmovil.com.co" and p == "Admin2026":
                     st.session_state['auth'] = True
                     st.rerun()
                 else:
-                    st.error("Credenciales incorrectas")
+                    st.error("Acceso denegado: Credenciales incorrectas")
         st.markdown('</div>', unsafe_allow_html=True)
     st.stop()
 
-# --- 5. NAVEGACIÓN Y SIDEBAR ---
+# --- 6. NAVEGACIÓN Y CARGA DE DATOS ---
 df_raw = load_base()
 
 with st.sidebar:
     st.image(LOGO_URL, use_container_width=True)
-    st.markdown("<hr style='margin:10px 0;'>", unsafe_allow_html=True)
-    menu = st.radio("NAVEGACIÓN", ["🏠 Inicio", "📊 Gestión de Mallas", "👥 Base de Datos"], label_visibility="collapsed")
+    st.markdown("<hr>", unsafe_allow_html=True)
+    menu = st.radio("MENÚ PRINCIPAL", ["🏠 Inicio", "📊 Gestión de Mallas", "👥 Base de Datos"])
     
     st.divider()
-    st.subheader("🗓️ Periodo de Gestión")
+    st.subheader("⚙️ Configuración del Mes")
     meses = ["Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio", "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"]
     mes_sel = st.selectbox("Mes", meses, index=datetime.now().month - 1)
     ano_sel = st.selectbox("Año", [2025, 2026], index=1)
     mes_num = meses.index(mes_sel) + 1
-
-    if st.button("🚪 Salir"):
+    
+    if st.button("🚪 Cerrar Sesión"):
         st.session_state['auth'] = False
         st.rerun()
 
-# --- 6. MÓDULOS DE LA APP ---
-
-# --- MÓDULO INICIO ---
+# --- 7. MÓDULO INICIO ---
 if menu == "🏠 Inicio":
     st.markdown(f"""
         <div class="main-banner">
-            <h1 style='font-size: 3rem;'>Bienvenido, Richard Guevara</h1>
-            <p style='font-size: 1.2rem;'>Gestión Integral de Personal y Turnos Operativos - {mes_sel} {ano_sel}</p>
+            <h1>Panel de Control MovilGo Pro</h1>
+            <p>Bienvenido Richard Guevara | Gestión Operativa Green Móvil - {mes_sel} {ano_sel}</p>
         </div>
     """, unsafe_allow_html=True)
 
-    # Métricas clave
     c1, c2, c3, c4 = st.columns(4)
-    with c1:
-        with st.container(border=True):
-            st.metric("Total Planta", "145 Pers.", "+2% vs dic")
-    with c2:
-        with st.container(border=True):
-            st.metric("Disponibilidad", "99.1%", "Óptimo")
-    with c3:
-        with st.container(border=True):
-            st.metric("Turnos Hoy", "48", "En curso")
-    with c4:
-        with st.container(border=True):
-            st.metric("Novedades", "0", "Sin alertas")
+    c1.metric("Personal Activo", "145", "Programados")
+    c2.metric("Disponibilidad", "99.8%", "Flota")
+    c3.metric("Novedades", "0", "Sin Alertas")
+    c4.metric("Cumplimiento", "100%", "Malla")
 
-    st.markdown("### ⚡ Accesos Directos")
+    st.markdown("### 🚀 Acciones Rápidas")
     col_a, col_b = st.columns(2)
     with col_a:
         with st.container(border=True):
-            st.markdown("#### 🔧 Planta Técnica (T1-T2-T3)")
-            st.write("Generación de malla automatizada para Masters y Técnicos mediante optimización lineal.")
-            if st.button("Ir a Malla Técnica"): 
-                st.info("Selecciona 'Gestión de Mallas' en el menú lateral.")
+            st.markdown("#### ⚙️ Planta Técnica")
+            st.write("Generar mallas de Masters y Técnicos A/B con rotación T1-T2-T3.")
+            if st.button("Ir a Planta Técnica"): st.info("Usa el menú lateral: Gestión de Mallas")
     with col_b:
         with st.container(border=True):
             st.markdown("#### 👥 Auxiliares de Abordaje")
-            st.write("Configuración de rotación 10/10 para el personal de atención al público y abordaje.")
-            if st.button("Ir a Malla Auxiliares"):
-                st.info("Selecciona 'Gestión de Mallas' en el menú lateral.")
+            st.write("Gestionar equipos de atención al público con modelo de rotación 10/10.")
+            if st.button("Ir a Auxiliares"): st.info("Usa el menú lateral: Gestión de Mallas")
 
-# --- MÓDULO GESTIÓN DE MALLAS ---
+# --- 8. MÓDULO GESTIÓN DE MALLAS ---
 elif menu == "📊 Gestión de Mallas":
     if df_raw is None:
-        st.error("❌ No se encontró el archivo 'empleados.xlsx'. Por favor cárguelo en la carpeta del script.")
+        st.error("❌ No se detectó el archivo 'empleados.xlsx'. Súbelo a la carpeta raíz.")
     else:
-        tab1, tab2 = st.tabs(["🔧 Planta Técnica (Operativa)", "👥 Auxiliares (10/10)"])
+        tab1, tab2 = st.tabs(["🏭 Planta Operativa (T1-T3)", "👥 Auxiliares de Abordaje"])
         
         DIAS_SEMANA = ["Lunes", "Martes", "Miercoles", "Jueves", "Viernes", "Sabado", "Domingo"]
         
+        # --- TAB 1: TÉCNICOS ---
         with tab1:
-            st.markdown("### Configuración de Planta Técnica")
-            cols_req = st.columns(3)
-            m_req = cols_req[0].number_input("Masters x Grupo", 1, 5, 2)
-            ta_req = cols_req[1].number_input("Técnicos A x Grupo", 1, 15, 7)
-            tb_req = cols_req[2].number_input("Técnicos B x Grupo", 1, 10, 3)
+            st.subheader("Configuración de Células Técnicas")
+            c_config = st.columns(3)
+            m_req = c_config[0].number_input("Masters x Grupo", 1, 5, 2)
+            ta_req = c_config[1].number_input("Técnicos A x Grupo", 1, 15, 7)
+            tb_req = c_config[2].number_input("Técnicos B x Grupo", 1, 10, 3)
 
-            with st.expander("📝 Definición de Grupos y Descansos", expanded=True):
+            with st.expander("📅 Grupos y Descansos Legales", expanded=True):
                 n_map, d_map, t_map = {}, {}, {}
-                c_g = st.columns(4)
+                cols_g = st.columns(4)
                 for i in range(4):
-                    with c_g[i]:
+                    with cols_g[i]:
                         g_id = f"G{i+1}"
                         n_s = st.text_input(f"Nombre {g_id}", f"GRUPO {i+1}", key=f"t1_n_{i}")
                         d_s = st.selectbox(f"Descanso", DIAS_SEMANA, index=i % 7, key=f"t1_d_{i}")
                         es_disp = st.checkbox("Disponibilidad", value=(i==3), key=f"t1_t_{i}")
                         n_map[g_id] = n_s; d_map[n_s] = d_s; t_map[n_s] = "DISP" if es_disp else "ROTA"
 
-            if st.button("⚡ GENERAR MALLA DE TÉCNICOS"):
-                # Lógica de distribución
+            if st.button("⚡ GENERAR MALLA TÉCNICA (OPTIMIZADA)"):
+                # Filtrar personal por cargo
                 mas_p = df_raw[df_raw['cargo'].str.contains('Master', case=False)].copy()
                 tca_p = df_raw[df_raw['cargo'].str.contains('Tecnico A', case=False)].copy()
                 tcb_p = df_raw[df_raw['cargo'].str.contains('Tecnico B', case=False)].copy()
@@ -229,7 +215,7 @@ elif menu == "📊 Gestión de Mallas":
                 d_info = [{"n": d, "nom": DIAS_SEMANA[datetime(ano_sel, mes_num, d).weekday()], "sem": datetime(ano_sel, mes_num, d).isocalendar()[1], "label": f"{d:02d}-{DIAS_SEMANA[datetime(ano_sel, mes_num, d).weekday()][:3]}"} for d in range(1, num_dias + 1)]
                 semanas = sorted(list(set([d["sem"] for d in d_info])))
 
-                # Optimización con PuLP
+                # Optimización Lineal PuLP
                 prob = LpProblem("MovilGo_Rota", LpMinimize)
                 asig = LpVariable.dicts("Asig", (g_rotan, semanas, ["T1","T2","T3"]), cat='Binary')
                 for s in semanas:
@@ -238,84 +224,94 @@ elif menu == "📊 Gestión de Mallas":
                 prob.solve(PULP_CBC_CMD(msg=0))
                 res_semanal = {(g, s): t for g in g_rotan for s in semanas for t in ["T1","T2","T3"] if value(asig[g][s][t]) == 1}
 
+                # Construcción de matriz final
                 final_rows = []
-                g_disp = [g for g in n_map.values() if t_map[g] == "DISP"][0]
+                g_disp_name = [g for g in n_map.values() if t_map[g] == "DISP"][0]
                 ultimo_t_disp = "T1"
 
                 for d_i in d_info:
-                    desc_hoy = [g for g in g_rotan if d_map[g] == d_i["nom"]]
-                    hoy_vals = {}
+                    descansan_hoy = [g for g in g_rotan if d_map[g] == d_i["nom"]]
+                    hoy_labels = {}
                     for g in g_rotan:
-                        if d_i["nom"] == d_map[g]: hoy_vals[g] = "DESC. LEY"
-                        else: hoy_vals[g] = res_semanal.get((g, d_i["sem"]), "T1")
+                        if d_i["nom"] == d_map[g]: hoy_labels[g] = "DESC. LEY"
+                        else: hoy_labels[g] = res_semanal.get((g, d_i["sem"]), "T1")
                     
-                    # Regla Disponibilidad
-                    if d_i["nom"] == d_map[g_disp]: label_disp = "DESC. LEY"
+                    # Lógica de Disponibilidad (Cubre descansos)
+                    if d_i["nom"] == d_map[g_disp_name]: label_disp = "DESC. LEY"
                     else:
-                        label_disp = hoy_vals.get(desc_hoy[0], "T1") if desc_hoy else "T1"
+                        label_disp = hoy_labels.get(descansan_hoy[0], "T1") if descansan_hoy else "T1"
                     
                     for g in n_map.values():
-                        val_f = label_disp if g == g_disp else hoy_vals[g]
+                        val = label_disp if g == g_disp_name else hoy_labels[g]
                         for _, m in df_celulas[df_celulas['grupo'] == g].iterrows():
-                            final_rows.append({"Grupo": g, "Empleado": m['nombre'], "Cargo": m['cargo'], "Label": d_i["label"], "Turno": val_f})
+                            final_rows.append({"Grupo": g, "Empleado": m['nombre'], "Cargo": m['cargo'], "Label": d_i["label"], "Turno": val, "d_n": d_i["n"]})
 
-                df_piv = pd.DataFrame(final_rows).pivot(index=['Grupo', 'Empleado', 'Cargo'], columns='Label', values='Turno')
-                st.success(f"Malla generada para {mes_sel}")
-                st.dataframe(df_piv.style.map(estilo_malla), use_container_width=True)
+                df_f = pd.DataFrame(final_rows)
+                piv = df_f.pivot(index=['Grupo', 'Empleado', 'Cargo'], columns='Label', values='Turno')
+                # Ordenar columnas por día
+                cols_sorted = sorted(piv.columns, key=lambda x: int(x.split('-')[0]))
+                st.success(f"Malla Técnica de {mes_sel} Generada")
+                st.dataframe(piv[cols_sorted].style.map(estilo_celdas), use_container_width=True)
 
+        # --- TAB 2: AUXILIARES ---
         with tab2:
-            st.markdown("### Configuración de Auxiliares")
+            st.subheader("Gestión de Equipos Auxiliares (10/10)")
             df_ax = df_raw[df_raw['cargo'].str.contains("Auxiliar", case=False, na=False)].copy()
             
             if df_ax.empty:
-                st.warning("⚠️ No se encontraron empleados con el cargo de 'Auxiliar'.")
+                st.warning("No hay personal con cargo 'Auxiliar' en la base.")
             else:
-                with st.expander("👥 Definir Equipos de Trabajo", expanded=False):
+                with st.expander("Configurar Rotación Equipos", expanded=True):
                     ax_n_map, ax_d_map = {}, {}
                     c_ax = st.columns(5)
                     for i in range(5):
                         with c_ax[i]:
-                            ne = st.text_input(f"Equipo {i+1}", f"EQUIPO {chr(65+i)}", key=f"ax_n_{i}")
+                            ne = st.text_input(f"Eq {i+1}", f"EQ-{chr(65+i)}", key=f"ax_n_{i}")
                             de = st.selectbox(f"Descanso", DIAS_SEMANA, index=i, key=f"ax_d_{i}")
                             ax_n_map[i] = ne; ax_d_map[ne] = de
 
                 if st.button("⚡ GENERAR MALLA AUXILIARES"):
-                    # Asignar equipo por rotación simple
                     df_ax = df_ax.reset_index(drop=True)
+                    # Asignar equipo (2 por equipo aprox)
                     df_ax['equipo'] = [ax_n_map[i % 5] for i in range(len(df_ax))]
+                    
                     num_dias = calendar.monthrange(ano_sel, mes_num)[1]
                     d_info_ax = [{"n": d, "nom": DIAS_SEMANA[datetime(ano_sel, mes_num, d).weekday()], "sem": datetime(ano_sel, mes_num, d).isocalendar()[1], "label": f"{d:02d}-{DIAS_SEMANA[datetime(ano_sel, mes_num, d).weekday()][:3]}"} for d in range(1, num_dias + 1)]
                     
                     rows_ax = []
-                    pool = ["T1", "T2", "T1", "T2", "DISPO"]
+                    pool = ["T1", "T2", "T1", "T2", "DISPONIBILIDAD"]
                     for d_i in d_info_ax:
+                        # Desplazar turnos por semana para equidad
                         shift = d_i["sem"] % 5
-                        turnos_hoy = pool[-shift:] + pool[:-shift]
+                        turnos_semana = pool[-shift:] + pool[:-shift]
                         for idx, eq in enumerate(ax_n_map.values()):
-                            t_f = "DESC. LEY" if d_i["nom"] == ax_d_map[eq] else turnos_hoy[idx]
+                            t_f = "DESC. LEY" if d_i["nom"] == ax_d_map[eq] else turnos_semana[idx]
                             for _, emp in df_ax[df_ax['equipo'] == eq].iterrows():
                                 rows_ax.append({"Equipo": eq, "Empleado": emp['nombre'], "Label": d_i["label"], "Turno": t_f})
 
                     piv_ax = pd.DataFrame(rows_ax).pivot(index=['Equipo', 'Empleado'], columns='Label', values='Turno')
-                    st.dataframe(piv_ax.style.map(estilo_malla), use_container_width=True)
+                    cols_ax_sorted = sorted(piv_ax.columns, key=lambda x: int(x.split('-')[0]))
+                    st.success("Malla de Auxiliares Generada Correctamente")
+                    st.dataframe(piv_ax[cols_ax_sorted].style.map(estilo_celdas), use_container_width=True)
 
-# --- MÓDULO BASE DE DATOS ---
+# --- 9. MÓDULO BASE DE DATOS ---
 elif menu == "👥 Base de Datos":
-    st.header("Base de Datos Maestra")
+    st.header("Gestión de Base de Datos Maestra")
     if df_raw is not None:
-        st.info("Vista previa de los empleados registrados en el sistema.")
+        st.write(f"Se han cargado **{len(df_raw)}** registros de empleados.")
         st.dataframe(df_raw, use_container_width=True)
         
-        st.markdown("### Acciones de Datos")
-        c1, c2 = st.columns(2)
-        with c1:
-            st.download_button(
-                label="📥 Descargar Base Actual (Excel)",
-                data=open("empleados.xlsx", "rb"),
-                file_name=f"Base_Empleados_{datetime.now().strftime('%Y%m%d')}.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-            )
-        with c2:
-            st.warning("Para actualizar el personal, reemplace el archivo 'empleados.xlsx' en el servidor.")
+        st.divider()
+        st.subheader("📥 Exportación")
+        buffer = io.BytesIO()
+        with pd.ExcelWriter(buffer, engine='xlsxwriter') as writer:
+            df_raw.to_excel(writer, index=False, sheet_name='Empleados')
+        
+        st.download_button(
+            label="Descargar Base de Datos (Excel)",
+            data=buffer.getvalue(),
+            file_name="base_empleados_respaldo.xlsx",
+            mime="application/vnd.ms-excel"
+        )
     else:
-        st.error("No se pudo leer la base de datos.")
+        st.error("Error: El archivo 'empleados.xlsx' no está disponible para previsualización.")
