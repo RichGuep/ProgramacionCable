@@ -16,10 +16,10 @@ st.set_page_config(
 # --- 2. RUTA DEL LOGO (GitHub) ---
 LOGO_PATH = "MovilGo.png" 
 
-# --- 3. ESTILOS CSS PROFESIONALES ---
+# --- 3. ESTILOS CSS PROFESIONALES (Login Limpio y Centrado) ---
 st.markdown(f"""
     <style>
-    /* Limpieza de interfaz de Streamlit */
+    /* Ocultar elementos de la interfaz de Streamlit para el login */
     [data-testid="stHeader"], [data-testid="stToolbar"], [data-testid="stDecoration"] {{
         display: none !important;
     }}
@@ -38,7 +38,7 @@ st.markdown(f"""
         margin: 100px auto;
     }}
 
-    /* Logo y Texto */
+    /* Forzar centrado del logo */
     div[data-testid="stImage"] > img {{
         display: block;
         margin-left: auto;
@@ -61,7 +61,7 @@ st.markdown(f"""
         text-align: center;
     }}
 
-    /* Botón Green Movil */
+    /* Botón de Acción */
     .stButton>button {{
         width: 100%;
         border-radius: 12px;
@@ -91,6 +91,7 @@ def load_base():
     except:
         return None
 
+# Función de estilizado corregida para versiones modernas de Pandas
 def estilo_malla(v):
     v = str(v)
     if 'DESC' in v: return 'background-color: #fee2e2; color: #991b1b; font-weight: bold; border: 1px solid #fecaca'
@@ -154,7 +155,7 @@ if menu == "🏠 Inicio":
     col2.metric("Auxiliares", "10/10", "Programados")
     col3.metric("Sincronización", "Sistemas OK", "Hoy")
 
-# --- MÓDULO MALLAS ---
+# --- MÓDULO MALLAS (CON LÓGICA DE ROTACIÓN) ---
 elif menu == "📊 Gestión de Mallas":
     if df_raw is None:
         st.error("Error: No se encontró el archivo 'empleados.xlsx'")
@@ -169,7 +170,7 @@ elif menu == "📊 Gestión de Mallas":
             ta_req = c_req[1].number_input("Tec A x Grupo", 1, 15, 7)
             tb_req = c_req[2].number_input("Tec B x Grupo", 1, 10, 3)
 
-            with st.expander("📅 Grupos y Descansos", expanded=True):
+            with st.expander("📅 Grupos y Descansos Legales", expanded=True):
                 n_map, d_map, t_map = {}, {}, {}
                 cg = st.columns(4)
                 for i in range(4):
@@ -180,7 +181,7 @@ elif menu == "📊 Gestión de Mallas":
                         n_map[f"G{i+1}"] = gn; d_map[gn] = ds; t_map[gn] = "DISP" if es_d else "ROTA"
 
             if st.button("⚡ GENERAR MALLA TÉCNICA"):
-                # Filtro de personal por cargo
+                # Filtro por cargo
                 mas = df_raw[df_raw['cargo'].str.contains('Master', case=False)].copy()
                 tca = df_raw[df_raw['cargo'].str.contains('Tecnico A', case=False)].copy()
                 tcb = df_raw[df_raw['cargo'].str.contains('Tecnico B', case=False)].copy()
@@ -200,8 +201,8 @@ elif menu == "📊 Gestión de Mallas":
                 d_info = [{"n": d, "nom": DIAS[datetime(ano_sel, mes_num, d).weekday()], "sem": datetime(ano_sel, mes_num, d).isocalendar()[1], "label": f"{d:02d}-{DIAS[datetime(ano_sel, mes_num, d).weekday()][:3]}"} for d in range(1, num_dias + 1)]
                 semanas = sorted(list(set([d["sem"] for d in d_info])))
 
-                # Optimización PuLP
-                prob = LpProblem("Malla", LpMinimize)
+                # Optimización con PuLP
+                prob = LpProblem("Malla_MovilGo", LpMinimize)
                 asig = LpVariable.dicts("Asig", (g_rotan, semanas, ["T1","T2","T3"]), cat='Binary')
                 for s in semanas:
                     for t in ["T1","T2","T3"]: prob += lpSum([asig[g][s][t] for g in g_rotan]) == 1
@@ -209,7 +210,7 @@ elif menu == "📊 Gestión de Mallas":
                 prob.solve(PULP_CBC_CMD(msg=0))
                 res_sem = {(g, s): t for g in g_rotan for s in semanas for t in ["T1","T2","T3"] if value(asig[g][s][t]) == 1}
 
-                # Construcción de la matriz diaria
+                # Construcción Matriz
                 final_rows = []
                 g_disp_name = [g for g in n_map.values() if t_map[g] == "DISP"][0]
                 
@@ -217,7 +218,7 @@ elif menu == "📊 Gestión de Mallas":
                     desc_hoy = [g for g in g_rotan if d_map[g] == d_i["nom"]]
                     hoy_vals = {g: ("DESC. LEY" if d_i["nom"] == d_map[g] else res_sem.get((g, d_i["sem"]), "T1")) for g in g_rotan}
                     
-                    # Cobertura de Disponibilidad
+                    # El grupo de Disponibilidad cubre al que está de descanso
                     label_disp = hoy_vals.get(desc_hoy[0], "T1") if desc_hoy else "T1"
                     
                     for g in n_map.values():
@@ -227,7 +228,9 @@ elif menu == "📊 Gestión de Mallas":
                 
                 df_piv = pd.DataFrame(final_rows).pivot(index=['Grupo', 'Empleado', 'Cargo'], columns='Label', values='Turno')
                 cols_ord = sorted(df_piv.columns, key=lambda x: int(x.split('-')[0]))
-                st.dataframe(df_piv[cols_ord].style.applymap(estilo_malla), use_container_width=True)
+                
+                # REPARACIÓN AQUÍ: .applymap() reemplazado por .map() para Pandas 2.1+
+                st.dataframe(df_piv[cols_ord].style.map(estilo_malla), use_container_width=True)
 
         with tab2:
             st.subheader("Malla Auxiliares (Rotación 10/10)")
@@ -239,13 +242,12 @@ elif menu == "📊 Gestión de Mallas":
                     rows_ax = []
                     for d_i in d_info_ax:
                         for _, emp in df_ax.iterrows():
-                            # Rotación simplificada por semana para auxiliares
                             t_ax = "T1" if d_i["sem"] % 2 == 0 else "T2"
                             t_f = "DESC. LEY" if d_i["nom"] == "Domingo" else t_ax
                             rows_ax.append({"Empleado": emp['nombre'], "Label": d_i["label"], "Turno": t_f})
                     piv_ax = pd.DataFrame(rows_ax).pivot(index='Empleado', columns='Label', values='Turno')
                     cols_ax = sorted(piv_ax.columns, key=lambda x: int(x.split('-')[0]))
-                    st.dataframe(piv_ax[cols_ax].style.applymap(estilo_malla), use_container_width=True)
+                    st.dataframe(piv_ax[cols_ax].style.map(estilo_malla), use_container_width=True)
 
 elif menu == "👥 Base de Datos":
     st.header("Base de Datos Maestra")
@@ -254,4 +256,4 @@ elif menu == "👥 Base de Datos":
         buffer = io.BytesIO()
         with pd.ExcelWriter(buffer, engine='xlsxwriter') as writer:
             df_raw.to_excel(writer, index=False)
-        st.download_button("📥 Descargar Excel", data=buffer.getvalue(), file_name="respaldo_base.xlsx")
+        st.download_button("📥 Descargar Base de Datos", data=buffer.getvalue(), file_name="respaldo_base.xlsx")
