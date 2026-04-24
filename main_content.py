@@ -216,17 +216,25 @@ def run_app():
                 
                 seleccion = st.selectbox("Seleccione una malla para visualizar", opciones, format_func=formato)
                 
-                # BOTÓN PARA DISPARAR LA RECUPERACIÓN
-                if st.button("🔍 CARGAR VERSIÓN SELECCIONADA"):
+               if st.button("🔍 CARGAR VERSIÓN SELECCIONADA"):
                     json_str = df_hist_view.iloc[seleccion]['Datos_JSON']
-                    m_rec = reconstruir_malla_desde_json(json_str)
                     
-                    if m_rec is not None:
-                        # Guardamos en el estado de sesión para que no se borre al refrescar
-                        st.session_state['malla_recuperada_viz'] = m_rec
-                        st.session_state['info_malla_viz'] = f"{df_hist_view.iloc[seleccion]['Mes']} {df_hist_view.iloc[seleccion]['Año']}"
-                    else:
-                        st.error("No se pudo reconstruir esta malla. El archivo podría estar corrupto.")
+                    try:
+                        # Intentar leer con el nuevo formato 'records'
+                        m_rec = pd.read_json(io.StringIO(json_str), orient='records')
+                        
+                        if m_rec is not None and not m_rec.empty:
+                            st.session_state['malla_recuperada_viz'] = m_rec
+                            st.session_state['info_malla_viz'] = f"{df_hist_view.iloc[seleccion]['Mes']} {df_hist_view.iloc[seleccion]['Año']}"
+                        else:
+                            st.error("La malla recuperada parece estar vacía.")
+                    except:
+                        # Si falla, intentar lectura estándar (para mallas viejas)
+                        try:
+                            m_rec = pd.read_json(io.StringIO(json_str))
+                            st.session_state['malla_recuperada_viz'] = m_rec
+                        except:
+                            st.error("No se pudo reconstruir esta malla. Formato incompatible.")
 
                 # 2. MOSTRAR LA MALLA (Si existe en el estado de sesión)
                 if 'malla_recuperada_viz' in st.session_state:
