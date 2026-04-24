@@ -4,13 +4,13 @@ import io
 import os
 import calendar
 from datetime import datetime
-from logic import load_base, generar_malla_tecnica_completa
+from logic import load_base, generar_malla_tecnica
 from styles import estilo_malla
 
 def run_app():
     LOGO_PATH = "MovilGo.png"
     DIAS = ["Lunes", "Martes", "Miercoles", "Jueves", "Viernes", "Sabado", "Domingo"]
-    
+
     if 'auth' not in st.session_state: st.session_state['auth'] = False
 
     if not st.session_state['auth']:
@@ -34,7 +34,9 @@ def run_app():
     df_raw = load_base()
     with st.sidebar:
         if os.path.exists(LOGO_PATH): st.image(LOGO_PATH, use_container_width=True)
+        st.markdown("<hr>", unsafe_allow_html=True)
         menu = st.radio("Menú", ["🏠 Inicio", "📊 Gestión de Mallas", "👥 Base de Datos"], label_visibility="collapsed")
+        st.divider()
         meses = ["Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio", "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"]
         mes_sel = st.selectbox("Mes", meses, index=datetime.now().month - 1)
         ano_sel = st.selectbox("Año", [2025, 2026], index=1)
@@ -51,14 +53,15 @@ def run_app():
         c3.metric("Sincronización", "Sistemas OK", "Hoy")
 
     elif menu == "📊 Gestión de Mallas":
-        if df_raw is None: st.error("No se encontró 'empleados.xlsx'")
+        if df_raw is None: st.error("Error: No se encontró 'empleados.xlsx'")
         else:
             tab1, tab2 = st.tabs(["Planta Operativa (T1-T3)", "Auxiliares de Abordaje"])
             with tab1:
-                col_r = st.columns(3)
-                m_req = col_r[0].number_input("Masters x Grupo", 1, 5, 2)
-                ta_req = col_r[1].number_input("Tec A x Grupo", 1, 15, 7)
-                tb_req = col_r[2].number_input("Tec B x Grupo", 1, 10, 3)
+                st.subheader("Configuración de Planta Técnica")
+                cr = st.columns(3)
+                m_req = cr[0].number_input("Masters x Grupo", 1, 5, 2)
+                ta_req = cr[1].number_input("Tec A x Grupo", 1, 15, 7)
+                tb_req = cr[2].number_input("Tec B x Grupo", 1, 10, 3)
                 with st.expander("📅 Grupos y Descansos Legales", expanded=True):
                     n_map, d_map, t_map = {}, {}, {}
                     cg = st.columns(4)
@@ -70,8 +73,8 @@ def run_app():
                             n_map[f"G{i+1}"] = gn; d_map[gn] = ds; t_map[gn] = "DISP" if es_d else "ROTA"
 
                 if st.button("⚡ GENERAR MALLA TÉCNICA"):
-                    df_res = generar_malla_tecnica_completa(df_raw, n_map, d_map, t_map, m_req, ta_req, tb_req, ano_sel, mes_num, DIAS)
-                    df_piv = df_res.pivot(index=['Grupo', 'Empleado', 'Cargo'], columns='Label', values='Turno')
+                    df_final = generar_malla_tecnica(df_raw, n_map, d_map, t_map, m_req, ta_req, tb_req, ano_sel, mes_num, DIAS)
+                    df_piv = df_final.pivot(index=['Grupo', 'Empleado', 'Cargo'], columns='Label', values='Turno')
                     cols_ord = sorted(df_piv.columns, key=lambda x: int(x.split('-')[0]))
                     st.dataframe(df_piv[cols_ord].style.map(estilo_malla), use_container_width=True)
 
@@ -92,8 +95,10 @@ def run_app():
                         st.dataframe(piv_ax[sorted(piv_ax.columns, key=lambda x: int(x.split('-')[0]))].style.map(estilo_malla), use_container_width=True)
 
     elif menu == "👥 Base de Datos":
-        st.dataframe(df_raw, use_container_width=True)
-        buffer = io.BytesIO()
-        with pd.ExcelWriter(buffer, engine='xlsxwriter') as writer:
-            df_raw.to_excel(writer, index=False)
-        st.download_button("📥 Descargar Base de Datos", data=buffer.getvalue(), file_name="respaldo_base.xlsx")
+        st.header("Base de Datos Maestra")
+        if df_raw is not None:
+            st.dataframe(df_raw, use_container_width=True)
+            buffer = io.BytesIO()
+            with pd.ExcelWriter(buffer, engine='xlsxwriter') as writer:
+                df_raw.to_excel(writer, index=False)
+            st.download_button("📥 Descargar Base de Datos", data=buffer.getvalue(), file_name="respaldo_base.xlsx")
