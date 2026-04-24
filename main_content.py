@@ -63,16 +63,23 @@ def run_app():
             st.image(LOGO_PATH, use_container_width=True)
         st.markdown("<hr>", unsafe_allow_html=True)
         
-        menu_options = ["🏠 Inicio", "📊 Gestión de Mallas", "👥 Base de Datos"]
-        if st.session_state['rol'] == "Admin":
-            menu_options.append("⚙️ Usuarios")
-            
         menu = st.radio("Menú", menu_options, label_visibility="collapsed")
         
         st.divider()
+        st.subheader("🗓️ Periodo de Programación")
+        
+        # Nueva opción de alcance
+        alcance = st.selectbox("Alcance", ["Mes Completo", "1 Semana", "2 Semanas"])
+        
         meses = ["Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio", "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"]
         mes_sel = st.selectbox("Mes", meses, index=datetime.now().month - 1)
         ano_sel = st.selectbox("Año", [2025, 2026], index=1)
+        
+        # Si es semanal, elegir qué semana del mes
+        semana_especifica = 1
+        if alcance != "Mes Completo":
+            semana_especifica = st.number_input("Desde la Semana #", 1, 5, 1)
+
         mes_num = meses.index(mes_sel) + 1
         
         if st.button("Cerrar Sesión"):
