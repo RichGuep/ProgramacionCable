@@ -7,7 +7,7 @@ import io
 
 # --- 1. CONFIGURACIÓN DE PÁGINA ---
 st.set_page_config(
-    page_title="MovilGo Pro | Green Móvil",
+    page_title="MovilGo Pro | GrupoMovil",
     layout="wide",
     page_icon="🚌"
 )
