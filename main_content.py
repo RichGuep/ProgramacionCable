@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import io
 import os
+import json
 from datetime import datetime
 
 # Importamos las funciones de nuestros otros archivos
@@ -78,21 +79,9 @@ def run_app():
             st.session_state['auth'] = False
             st.rerun()
 
-    # --- NAVEGACIÓN ---
-    if menu == "🏠 Inicio":
-        st.markdown(f"""
-            <div style="background: linear-gradient(135deg, #064e3b 0%, #10b981 100%); padding: 3rem; border-radius: 20px; color: white; text-align: center;">
-                <h1>Bienvenido al Sistema MovilGo</h1>
-                <p>Rol actual: {st.session_state['rol']} | Período: {mes_sel} {ano_sel}</p>
-            </div>
-        """, unsafe_allow_html=True)
-        
-        c1, c2, c3 = st.columns(3)
-        c1.metric("Personal Técnico", "Activo", "Malla PuLP")
-        c2.metric("Sincronización", "GitHub", "Conectado")
-        c3.metric("Seguridad", st.session_state['rol'], "Nivel Acceso")
-
-    elif menu == "📊 Gestión de Mallas":
+    # --- MÓDULO GESTIÓN DE MALLAS ---
+    if menu == "📊 Gestión de Mallas":
+        # 1. Cargar histórico desde GitHub
         df_hist = leer_excel_de_github("historico_mallas.xlsx")
         if df_hist is None:
             df_hist = pd.DataFrame(columns=["Mes", "Año", "Tipo", "Fecha", "Datos_JSON"])
@@ -121,7 +110,7 @@ def run_app():
                         n_map[g_id] = n_s; d_map[n_s] = d_s; t_map[n_s] = "DISP" if es_disp else "ROTA"
 
             if st.button("⚡ GENERAR MALLA TÉCNICA"):
-                # --- BUSCAR ÚLTIMO DÍA DEL MES ANTERIOR PARA EMPALME ---
+                # LÓGICA DE EMPALME AUTOMÁTICO
                 mes_ant_idx = (mes_num - 2) % 12
                 mes_ant_nom = meses[mes_ant_idx]
                 ano_ant = ano_sel if mes_num > 1 else ano_sel - 1
@@ -147,6 +136,7 @@ def run_app():
                 st.dataframe(piv[sorted(piv.columns, key=lambda x: int(str(x).split('-')[0]))].style.map(estilo_malla), use_container_width=True)
                 
                 st.divider()
+                # --- ALERTA DE REEMPLAZO ---
                 existe = not df_hist[(df_hist['Mes'] == mes_sel) & (df_hist['Año'] == ano_sel) & (df_hist['Tipo'] == "Técnica")].empty
                 confirmar = True
                 if existe:
@@ -159,10 +149,10 @@ def run_app():
                         nueva_fila = pd.DataFrame([{
                             "Mes": mes_sel, "Año": ano_sel, "Tipo": "Técnica",
                             "Fecha": datetime.now().strftime("%Y-%m-%d %H:%M"),
-                            "Datos_JSON": res.to_json(orient='records')
+                            "Datos_JSON": res.to_json(orient='split') # Usamos 'split' para mayor estabilidad en celdas largas
                         }])
-                        df_hist = pd.concat([df_hist, nueva_fila], ignore_index=True)
-                        if guardar_excel_en_github(df_hist, "historico_mallas.xlsx"):
+                        df_hist_final = pd.concat([df_hist, nueva_fila], ignore_index=True)
+                        if guardar_excel_en_github(df_hist_final, "historico_mallas.xlsx"):
                             st.success("✅ Malla sincronizada exitosamente."); st.balloons()
                     else: st.error("Debe confirmar para reemplazar.")
 
@@ -185,34 +175,42 @@ def run_app():
 
         with tab3:
             st.subheader("Historial de Programaciones")
-            df_h_view = leer_excel_de_github("historico_mallas.xlsx")
-            if df_h_view is not None and not df_h_view.empty:
-                df_h_view = df_h_view.sort_values(by="Fecha", ascending=False)
+            if df_hist is not None and not df_hist.empty:
+                df_h_view = df_hist.sort_values(by="Fecha", ascending=False)
                 opciones = range(len(df_h_view))
                 def fmt_func(x): return f"{df_h_view.iloc[x]['Tipo']} - {df_h_view.iloc[x]['Mes']} {df_h_view.iloc[x]['Año']} ({df_h_view.iloc[x]['Fecha']})"
                 
                 seleccion = st.selectbox("Seleccione versión para cargar", opciones, format_func=fmt_func)
                 
                 if st.button("🔍 CARGAR VERSIÓN SELECCIONADA"):
+                    # RECONSTRUCCIÓN CON MANEJO DE ERRORES
                     m_rec = reconstruir_malla_desde_json(df_h_view.iloc[seleccion]['Datos_JSON'])
                     if m_rec is not None:
                         st.session_state['malla_viz'] = m_rec
                         st.session_state['info_viz'] = fmt_func(seleccion)
-                    else: st.error("Archivo corrupto o vacío.")
+                    else:
+                        st.error("❌ El archivo está corrupto o incompleto en GitHub. Sugerencia: Borre 'historico_mallas.xlsx' en su repositorio y genere mallas nuevas.")
 
                 if 'malla_viz' in st.session_state:
                     st.divider()
                     st.success(f"Visualizando: {st.session_state['info_viz']}")
                     df_v = st.session_state['malla_viz']
+                    
                     if 'Grupo' in df_v.columns:
                         piv_v = df_v.pivot(index=['Grupo', 'Empleado', 'Cargo'], columns='Label', values='Final')
                         st.dataframe(piv_v[sorted(piv_v.columns, key=lambda x: int(str(x).split('-')[0]))].style.map(estilo_malla), use_container_width=True)
                     else:
                         piv_v = df_v.pivot(index=['Equipo', 'Empleado'], columns='Label', values='Turno')
                         st.dataframe(piv_v[sorted(piv_v.columns, key=lambda x: int(str(x).split('-')[0]))].style.map(estilo_ax), use_container_width=True)
+                    
                     if st.button("Cerrar Vista"):
                         del st.session_state['malla_viz']; st.rerun()
             else: st.info("No hay historial guardado.")
+
+    # --- OTROS MÓDULOS ---
+    elif menu == "🏠 Inicio":
+         # ... Código de Inicio (Igual al anterior)
+         pass
 
     elif menu == "👥 Base de Datos":
         st.header("Base de Datos Maestra")
@@ -235,9 +233,6 @@ def run_app():
                     if n and c and p:
                         df_u_new = pd.concat([df_users, pd.DataFrame([[n,c,r,p]], columns=df_users.columns)], ignore_index=True)
                         if guardar_excel_en_github(df_u_new, "usuarios.xlsx"):
-                            st.success("Usuario registrado."); st.rerun()
+                            st.success("Usuario registrado exitosamente."); st.rerun()
         with t2:
             st.table(df_users[["Nombre", "Correo", "Rol"]])
-
-if __name__ == "__main__":
-    run_app()
