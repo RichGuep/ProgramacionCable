@@ -31,7 +31,7 @@ def run_app():
         with col_login:
             st.markdown('<div class="login-card">', unsafe_allow_html=True)
             if os.path.exists(LOGO_PATH): 
-                st.image(LOGO_PATH, width=820)
+                st.image(LOGO_PATH, width=1420)
             st.markdown('<div class="brand-title">MovilGO!</div>', unsafe_allow_html=True)
             
             with st.form("Login"):
