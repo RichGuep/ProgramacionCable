@@ -7,13 +7,13 @@ def apply_custom_styles():
         page_icon="🚌"
     )
 
-    st.markdown("""
+    st.markdown(f"""
         <style>
-        [data-testid="stHeader"], [data-testid="stToolbar"], [data-testid="stDecoration"] {
+        [data-testid="stHeader"], [data-testid="stToolbar"], [data-testid="stDecoration"] {{
             display: none !important;
-        }
-        .main { background-color: #f8fafc; }
-        .login-card {
+        }}
+        .main {{ background-color: #f8fafc; }}
+        .login-card {{
             background-color: white;
             padding: 3.5rem;
             border-radius: 24px;
@@ -22,27 +22,27 @@ def apply_custom_styles():
             text-align: center;
             max-width: 500px;
             margin: 100px auto;
-        }
-        div[data-testid="stImage"] > img {
+        }}
+        div[data-testid="stImage"] > img {{
             display: block;
             margin-left: auto;
             margin-right: auto;
-        }
-        .brand-title {
+        }}
+        .brand-title {{
             color: #064e3b;
             font-size: 2.6rem;
             font-weight: 850;
             margin-top: 20px;
             text-align: center;
             letter-spacing: -1px;
-        }
-        .brand-subtitle {
+        }}
+        .brand-subtitle {{
             color: #64748b;
             font-size: 1.1rem;
             margin-bottom: 30px;
             text-align: center;
-        }
-        .stButton>button {
+        }}
+        .stButton>button {{
             width: 100%;
             border-radius: 12px;
             background: linear-gradient(90deg, #10b981 0%, #059669 100%);
@@ -51,11 +51,11 @@ def apply_custom_styles():
             height: 3.5rem;
             border: none;
             transition: 0.3s;
-        }
-        .stButton>button:hover {
+        }}
+        .stButton>button:hover {{
             box-shadow: 0 10px 15px -3px rgba(16, 185, 129, 0.4);
             transform: translateY(-2px);
-        }
+        }}
         </style>
     """, unsafe_allow_html=True)
 
