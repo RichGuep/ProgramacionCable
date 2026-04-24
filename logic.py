@@ -3,6 +3,7 @@ from pulp import *
 import calendar
 from datetime import datetime
 import streamlit as st
+import io
 
 @st.cache_data
 def load_base():
@@ -13,7 +14,11 @@ def load_base():
         # Buscamos columnas de nombre y cargo con nombres flexibles
         c_nom = next((c for c in df.columns if 'nom' in c or 'emp' in c), "nombre")
         c_car = next((c for c in df.columns if 'car' in c), "cargo")
-        return df.rename(columns={c_nom: 'nombre', c_car: 'cargo'})
+        df = df.rename(columns={c_nom: 'nombre', c_car: 'cargo'})
+        # Limpieza de strings para evitar errores de matching
+        df['cargo'] = df['cargo'].astype(str).str.strip()
+        df['nombre'] = df['nombre'].astype(str).str.strip()
+        return df
     except Exception as e:
         st.error(f"Error al cargar empleados.xlsx: {e}")
         return None
@@ -68,14 +73,13 @@ def generar_malla_tecnica_pulp(df_raw, n_map, d_map, t_map, m_req, ta_req, tb_re
     prob = LpProblem("MovilGo_Empalme", LpMinimize)
     asig = LpVariable.dicts("Asig", (g_rotan, semanas, LISTA_TURNOS), cat='Binary')
     
-    # Restricción: Cada turno debe estar cubierto por exactamente 1 grupo por semana
+    # Restricciones base
     for s in semanas:
         for t in LISTA_TURNOS:
             prob += lpSum([asig[g][s][t] for g in g_rotan]) == 1
         for g in g_rotan:
             prob += lpSum([asig[g][s][t] for t in LISTA_TURNOS]) == 1
     
-    # Restricción: Lógica de Rotación T1 -> T2 -> T3
     for g in g_rotan:
         for i in range(len(semanas)-1):
             s1, s2 = semanas[i], semanas[i+1]
@@ -88,22 +92,20 @@ def generar_malla_tecnica_pulp(df_raw, n_map, d_map, t_map, m_req, ta_req, tb_re
         s_inicial = semanas[0]
         for g_name, ultimo_t in estado_anterior.items():
             if g_name in g_rotan:
-                # Si terminó el mes pasado en T3, esta primera semana NO PUEDE ser T1 (Bloqueo de seguridad)
+                # Bloqueo: Salida de Noche (T3) -> No puede entrar de Mañana (T1)
                 if "T3" in str(ultimo_t):
                     prob += asig[g_name][s_inicial]["T1"] == 0
-                # Si terminó en T2, la lógica dice que debe ir a T3
+                # Empuje lógico: Si terminó en T2, debe rotar a T3
                 elif "T2" in str(ultimo_t):
                     prob += asig[g_name][s_inicial]["T3"] == 1
 
     prob.solve(PULP_CBC_CMD(msg=0))
     
-    # 4. Construcción de la matriz final día a día
+    # 4. Construcción de la matriz
     res_semanal = {(g, s): t for g in g_rotan for s in semanas for t in LISTA_TURNOS if value(asig[g][s][t]) == 1}
-
     final_rows = []
     turno_vivo = {g: res_semanal.get((g, semanas[0]), "T1") for g in g_rotan}
     
-    # Identificar grupo de Disponibilidad
     grupos_disp = [g for g in n_map.values() if t_map[g] == "DISP"]
     g_disp = grupos_disp[0] if grupos_disp else None
     ultimo_turno_disp = "T1"
@@ -111,16 +113,13 @@ def generar_malla_tecnica_pulp(df_raw, n_map, d_map, t_map, m_req, ta_req, tb_re
     for d_i in d_info:
         descansan_hoy = [g for g in g_rotan if d_map[g] == d_i["nom"]]
         hoy_labels = {}
-        
         for g in g_rotan:
             if d_i["nom"] == d_map[g]:
                 hoy_labels[g] = "DESC. LEY"
-                # Al cambiar de semana dentro del bucle de días
                 turno_vivo[g] = res_semanal.get((g, d_i["sem"]), turno_vivo[g])
             else:
                 hoy_labels[g] = turno_vivo[g]
         
-        # Lógica para el grupo de Disponibilidad
         label_disp = "T1"
         if g_disp:
             if d_i["nom"] == d_map[g_disp]:
@@ -129,7 +128,6 @@ def generar_malla_tecnica_pulp(df_raw, n_map, d_map, t_map, m_req, ta_req, tb_re
                 if descansan_hoy:
                     g_a_cubrir = descansan_hoy[0]
                     t_necesario = turno_vivo[g_a_cubrir]
-                    # Bloqueos de seguridad para disponibilidad
                     if ultimo_turno_disp == "T3": label_disp = "APOYO (Post-Noche)"
                     elif ultimo_turno_disp == "T2" and t_necesario == "T1": label_disp = "T2 (Apoyo)"
                     else: label_disp = t_necesario
@@ -139,17 +137,12 @@ def generar_malla_tecnica_pulp(df_raw, n_map, d_map, t_map, m_req, ta_req, tb_re
             if "DESC" not in label_disp and "APOYO" not in label_disp:
                 ultimo_turno_disp = label_disp[:2]
 
-        # Consolidar datos del día para todos los empleados
         for g_id, g_name in n_map.items():
             val_final = label_disp if g_name == g_disp else hoy_labels.get(g_name, "T1")
             for _, m in df_celulas[df_celulas['grupo'] == g_name].iterrows():
                 final_rows.append({
-                    "Grupo": g_name, 
-                    "Empleado": m['nombre'], 
-                    "Cargo": m['cargo'], 
-                    "Label": d_i["label"], 
-                    "Final": val_final,
-                    "n_dia": d_i["n"]
+                    "Grupo": g_name, "Empleado": m['nombre'], "Cargo": m['cargo'], 
+                    "Label": d_i["label"], "Final": val_final, "n_dia": d_i["n"]
                 })
                 
     return pd.DataFrame(final_rows)
@@ -158,43 +151,39 @@ def generar_malla_auxiliares_pool(df_raw, aux_n_map, aux_d_map, ano_sel, mes_num
     """Lógica de rotación circular para personal auxiliar."""
     DIAS_SEMANA = ["Lunes", "Martes", "Miercoles", "Jueves", "Viernes", "Sabado", "Domingo"]
     df_aux = df_raw[df_raw['cargo'].str.contains("Auxiliar", case=False, na=False)].copy().reset_index(drop=True)
-    
-    if df_aux.empty:
-        return None
+    if df_aux.empty: return None
 
-    # Asignación de equipos
     df_aux['equipo'] = [aux_n_map[i % 5] for i in range(len(df_aux))]
-    
     num_dias = calendar.monthrange(ano_sel, mes_num)[1]
+    
     d_info_ax = []
     for d in range(1, num_dias + 1):
         fecha = datetime(ano_sel, mes_num, d)
         d_info_ax.append({
-            "nom": DIAS_SEMANA[fecha.weekday()], 
-            "sem": fecha.isocalendar()[1], 
+            "nom": DIAS_SEMANA[fecha.weekday()], "sem": fecha.isocalendar()[1], 
             "label": f"{d:02d}-{DIAS_SEMANA[fecha.weekday()][:3]}"
         })
     
     semanas_ax = sorted(list(set([d["sem"] for d in d_info_ax])))
     rows_ax = []
-    
     for s_idx, sem in enumerate(semanas_ax):
         pool = ["T1", "T1", "T2", "T2", "DISPONIBILIDAD"]
-        # Rotación del pool: cada semana el pool se desplaza
         offset = s_idx % 5
         turnos_semana = pool[-offset:] + pool[:-offset]
-        
         for d_i in [d for d in d_info_ax if d["sem"] == sem]:
             for eq_idx in range(5):
                 eq_name = aux_n_map[eq_idx]
                 final_t = "DESC. LEY" if d_i["nom"] == aux_d_map[eq_name] else turnos_semana[eq_idx]
-                
                 for _, emp in df_aux[df_aux['equipo'] == eq_name].iterrows():
-                    rows_ax.append({
-                        "Equipo": eq_name, 
-                        "Empleado": emp['nombre'], 
-                        "Label": d_i["label"], 
-                        "Turno": final_t
-                    })
+                    rows_ax.append({"Equipo": eq_name, "Empleado": emp['nombre'], "Label": d_i["label"], "Turno": final_t})
     
     return pd.DataFrame(rows_ax)
+
+def reconstruir_malla_desde_json(json_str):
+    """Utilidad para recuperar mallas del histórico de forma segura."""
+    try:
+        if pd.isna(json_str) or str(json_str).strip() == "":
+            return None
+        return pd.read_json(io.StringIO(str(json_str)))
+    except Exception:
+        return None
