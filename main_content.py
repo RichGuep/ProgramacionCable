@@ -31,8 +31,8 @@ def run_app():
         with col_login:
             st.markdown('<div class="login-card">', unsafe_allow_html=True)
             if os.path.exists(LOGO_PATH): 
-                st.image(LOGO_PATH, width=320)
-            st.markdown('<div class="brand-title">MovilGo Admin</div>', unsafe_allow_html=True)
+                st.image(LOGO_PATH, width=820)
+            st.markdown('<div class="brand-title">MovilGO!</div>', unsafe_allow_html=True)
             
             with st.form("Login"):
                 u = st.text_input("Usuario Corporativo")
