@@ -15,8 +15,8 @@ def load_base():
     except:
         return None
 
-def generar_malla_optimizada(df_raw, n_map, d_map, t_map, m_req, ta_req, tb_req, ano_sel, mes_num, DIAS):
-    # Filtrado por cargos
+def generar_malla_tecnica_completa(df_raw, n_map, d_map, t_map, m_req, ta_req, tb_req, ano_sel, mes_num, DIAS):
+    # Filtro por cargo exacto del script original
     mas = df_raw[df_raw['cargo'].str.contains('Master', case=False)].copy()
     tca = df_raw[df_raw['cargo'].str.contains('Tecnico A', case=False)].copy()
     tcb = df_raw[df_raw['cargo'].str.contains('Tecnico B', case=False)].copy()
@@ -33,15 +33,21 @@ def generar_malla_optimizada(df_raw, n_map, d_map, t_map, m_req, ta_req, tb_req,
     df_cel = pd.DataFrame(c_list)
     g_rotan = [g for g in n_map.values() if t_map[g] == "ROTA"]
     num_dias = calendar.monthrange(ano_sel, mes_num)[1]
-    d_info = [{"n": d, "nom": DIAS[datetime(ano_sel, mes_num, d).weekday()], "sem": datetime(ano_sel, mes_num, d).isocalendar()[1], "label": f"{d:02d}-{DIAS[datetime(ano_sel, mes_num, d).weekday()][:3]}"} for d in range(1, num_dias + 1)]
+    
+    d_info = [{"n": d, "nom": DIAS[datetime(ano_sel, mes_num, d).weekday()], 
+               "sem": datetime(ano_sel, mes_num, d).isocalendar()[1], 
+               "label": f"{d:02d}-{DIAS[datetime(ano_sel, mes_num, d).weekday()][:3]}"} 
+              for d in range(1, num_dias + 1)]
+    
     semanas = sorted(list(set([d["sem"] for d in d_info])))
 
-    # Optimización PuLP
+    # Optimización PuLP (Lógica Original)
     prob = LpProblem("Malla_MovilGo", LpMinimize)
     asig = LpVariable.dicts("Asig", (g_rotan, semanas, ["T1","T2","T3"]), cat='Binary')
     for s in semanas:
         for t in ["T1","T2","T3"]: prob += lpSum([asig[g][s][t] for g in g_rotan]) == 1
         for g in g_rotan: prob += lpSum([asig[g][s][t] for t in ["T1","T2","T3"]]) == 1
+    
     prob.solve(PULP_CBC_CMD(msg=0))
     res_sem = {(g, s): t for g in g_rotan for s in semanas for t in ["T1","T2","T3"] if value(asig[g][s][t]) == 1}
 
@@ -51,10 +57,13 @@ def generar_malla_optimizada(df_raw, n_map, d_map, t_map, m_req, ta_req, tb_req,
     for d_i in d_info:
         desc_hoy = [g for g in g_rotan if d_map[g] == d_i["nom"]]
         hoy_vals = {g: ("DESC. LEY" if d_i["nom"] == d_map[g] else res_sem.get((g, d_i["sem"]), "T1")) for g in g_rotan}
+        
+        # El grupo de Disponibilidad cubre al que está de descanso
         label_disp = hoy_vals.get(desc_hoy[0], "T1") if desc_hoy else "T1"
+        
         for g in n_map.values():
             val = label_disp if g == g_disp_name else hoy_vals.get(g, "T1")
             for _, m in df_cel[df_cel['grupo'] == g].iterrows():
                 final_rows.append({"Grupo": g, "Empleado": m['nombre'], "Cargo": m['cargo'], "Label": d_i["label"], "Turno": val})
-    
+                
     return pd.DataFrame(final_rows)
