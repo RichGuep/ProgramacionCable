@@ -187,60 +187,57 @@ def run_app():
                     st.dataframe(piv_ax[sorted(piv_ax.columns, key=lambda x: int(str(x).split('-')[0]))].style.map(estilo_ax), use_container_width=True)
 
         with tab3:
-            st.subheader("Historial de Programaciones")
-            if not df_hist.empty:
-                df_hist_view = df_hist.sort_values(by="Fecha", ascending=False)
-                sel = st.selectbox("Seleccione Versión", range(len(df_hist_view)), 
-                                  format_func=lambda x: f"{df_hist_view.iloc[x]['Tipo']} - {df_hist_view.iloc[x]['Mes']} {df_hist_view.iloc[x]['Año']} ({df_hist_view.iloc[x]['Fecha']})")
+            st.subheader("Historial de Programaciones Guardadas")
+            
+            # 1. Intentar leer el histórico
+            df_hist_view = leer_excel_de_github("historico_mallas.xlsx")
+            
+            if df_hist_view is not None and not df_hist_view.empty:
+                # Ordenar por lo más reciente
+                df_hist_view = df_hist_view.sort_values(by="Fecha", ascending=False)
                 
-                if st.button("Visualizar Versión Guardada"):
-                    try:
-                        m_rec = reconstruir_malla_desde_json(df_hist_view.iloc[sel]['Datos_JSON'])
-                        if m_rec is not None:
-                            st.write(f"### Mostrando: {df_hist_view.iloc[sel]['Mes']} {df_hist_view.iloc[sel]['Año']}")
-                            piv_rec = m_rec.pivot(index=['Grupo', 'Empleado', 'Cargo'], columns='Label', values='Final')
-                            st.dataframe(piv_rec[sorted(piv_rec.columns, key=lambda x: int(str(x).split('-')[0]))].style.map(estilo_malla), use_container_width=True)
-                    except Exception as e:
-                        st.error(f"Error al reconstruir: {e}")
-            else:
-                st.info("No hay registros guardados.")
-
-    elif menu == "👥 Base de Datos":
-        st.header("Base de Datos Maestra")
-        if df_raw is not None:
-            st.dataframe(df_raw, use_container_width=True)
-            buffer = io.BytesIO()
-            with pd.ExcelWriter(buffer, engine='xlsxwriter') as writer:
-                df_raw.to_excel(writer, index=False)
-            st.download_button("📥 Descargar Copia Seguridad", data=buffer.getvalue(), file_name="respaldo_datos.xlsx")
-
-    elif menu == "⚙️ Usuarios":
-        if st.session_state['rol'] != "Admin":
-            st.error("Área restringida solo para administradores.")
-            return
-
-        st.header("Gestión de Usuarios y Roles")
-        t_crear, t_lista = st.tabs(["Crear Nuevo Usuario", "Lista de Accesos"])
-
-        with t_crear:
-            with st.form("form_usuarios_github"):
-                st.subheader("Registrar nuevo personal con acceso")
-                new_nom = st.text_input("Nombre Completo")
-                new_cor = st.text_input("Correo (Usuario de ingreso)")
-                new_rol = st.selectbox("Rol en el Sistema", ["Admin", "Planificador", "Visualizador"])
-                new_pwd = st.text_input("Contraseña Temporal", type="password")
-                btn_reg = st.form_submit_button("REGISTRAR Y SINCRONIZAR CON GITHUB")
+                # Selector de versiones
+                opciones = range(len(df_hist_view))
+                def formato(x):
+                    row = df_hist_view.iloc[x]
+                    return f"{row['Tipo']} - {row['Mes']} {row['Año']} (Creado: {row['Fecha']})"
                 
-                if btn_reg:
-                    if new_nom and new_cor and new_pwd:
-                        nuevo_u = pd.DataFrame([[new_nom, new_cor, new_rol, new_pwd]], columns=["Nombre", "Correo", "Rol", "Password"])
-                        df_users_final = pd.concat([df_users, nuevo_u], ignore_index=True)
-                        if guardar_excel_en_github(df_users_final, "usuarios.xlsx"):
-                            st.success(f"✅ ¡Usuario '{new_nom}' creado con éxito!")
-                            st.balloons()
-                            st.rerun()
+                seleccion = st.selectbox("Seleccione una malla para visualizar", opciones, format_func=formato)
+                
+                # BOTÓN PARA DISPARAR LA RECUPERACIÓN
+                if st.button("🔍 CARGAR VERSIÓN SELECCIONADA"):
+                    json_str = df_hist_view.iloc[seleccion]['Datos_JSON']
+                    m_rec = reconstruir_malla_desde_json(json_str)
+                    
+                    if m_rec is not None:
+                        # Guardamos en el estado de sesión para que no se borre al refrescar
+                        st.session_state['malla_recuperada_viz'] = m_rec
+                        st.session_state['info_malla_viz'] = f"{df_hist_view.iloc[seleccion]['Mes']} {df_hist_view.iloc[seleccion]['Año']}"
                     else:
-                        st.warning("⚠️ Todos los campos son obligatorios.")
+                        st.error("No se pudo reconstruir esta malla. El archivo podría estar corrupto.")
 
-        with t_lista:
-            st.table(df_users[["Nombre", "Correo", "Rol"]])
+                # 2. MOSTRAR LA MALLA (Si existe en el estado de sesión)
+                if 'malla_recuperada_viz' in st.session_state:
+                    st.divider()
+                    st.success(f"📅 Visualizando Histórico: {st.session_state['info_malla_viz']}")
+                    
+                    df_viz = st.session_state['malla_recuperada_viz']
+                    
+                    # Identificamos si es Técnica o Auxiliar por las columnas
+                    if 'Grupo' in df_viz.columns:
+                        piv_rec = df_viz.pivot(index=['Grupo', 'Empleado', 'Cargo'], columns='Label', values='Final')
+                        # Ordenar columnas por número de día
+                        cols_ord = sorted(piv_rec.columns, key=lambda x: int(str(x).split('-')[0]))
+                        st.dataframe(piv_rec[cols_ord].style.map(estilo_malla), use_container_width=True)
+                    else:
+                        # Si es de auxiliares
+                        piv_rec = df_viz.pivot(index=['Equipo', 'Empleado'], columns='Label', values='Turno')
+                        cols_ord = sorted(piv_rec.columns, key=lambda x: int(str(x).split('-')[0]))
+                        st.dataframe(piv_rec[cols_ord].style.map(estilo_ax), use_container_width=True)
+                    
+                    # Botón para limpiar la vista
+                    if st.button("Cerrar Visualización"):
+                        del st.session_state['malla_recuperada_viz']
+                        st.rerun()
+            else:
+                st.info("No se encontraron mallas guardadas en GitHub.")
