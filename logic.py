@@ -18,6 +18,7 @@ def generar_malla_tecnica_pulp(df_raw, n_map, d_map, t_map, m_req, ta_req, tb_re
     DIAS_SEMANA = ["Lunes", "Martes", "Miercoles", "Jueves", "Viernes", "Sabado", "Domingo"]
     LISTA_TURNOS = ["T1", "T2", "T3"]
     
+    # --- LOGICA ORIGINAL: Distribución por categorías ---
     mas_p = df_raw[df_raw['cargo'].str.contains('Master', case=False)].copy()
     tca_p = df_raw[df_raw['cargo'].str.contains('Tecnico A', case=False)].copy()
     tcb_p = df_raw[df_raw['cargo'].str.contains('Tecnico B', case=False)].copy()
@@ -37,7 +38,8 @@ def generar_malla_tecnica_pulp(df_raw, n_map, d_map, t_map, m_req, ta_req, tb_re
     d_info = [{"n": d, "nom": DIAS_SEMANA[datetime(ano_sel, mes_num, d).weekday()], "sem": datetime(ano_sel, mes_num, d).isocalendar()[1], "label": f"{d:02d}-{DIAS_SEMANA[datetime(ano_sel, mes_num, d).weekday()][:3]}"} for d in range(1, num_dias + 1)]
     semanas = sorted(list(set([d["sem"] for d in d_info])))
 
-    prob = LpProblem("MovilGo_Continuidad", LpMinimize)
+    # --- LOGICA ORIGINAL: Optimizador PuLP ---
+    prob = LpProblem("MovilGo_Rota", LpMinimize)
     asig = LpVariable.dicts("Asig", (g_rotan, semanas, LISTA_TURNOS), cat='Binary')
     
     for s in semanas:
@@ -47,11 +49,11 @@ def generar_malla_tecnica_pulp(df_raw, n_map, d_map, t_map, m_req, ta_req, tb_re
     for g in g_rotan:
         for i in range(len(semanas)-1):
             s1, s2 = semanas[i], semanas[i+1]
-            prob += asig[g][s1]["T1"] <= asig[g][s2]["T2"]
             prob += asig[g][s1]["T2"] <= asig[g][s2]["T3"]
             prob += asig[g][s1]["T3"] <= asig[g][s2]["T1"]
+            prob += asig[g][s1]["T1"] <= asig[g][s2]["T2"]
 
-    # --- LÓGICA DE EMPALME (CRÍTICO PARA RICHARD) ---
+    # --- LOGICA DE EMPALME: Continuidad ---
     if estado_anterior:
         s_ini = semanas[0]
         for g, ult_t in estado_anterior.items():
@@ -62,6 +64,7 @@ def generar_malla_tecnica_pulp(df_raw, n_map, d_map, t_map, m_req, ta_req, tb_re
     prob.solve(PULP_CBC_CMD(msg=0))
     res_sem = {(g, s): t for g in g_rotan for s in semanas for t in LISTA_TURNOS if value(asig[g][s][t]) == 1}
 
+    # --- REGLA DE ORO: Construcción con Disponibilidad y Bloqueos ---
     final_rows = []
     turno_vivo = {g: res_sem.get((g, semanas[0]), "T1") for g in g_rotan}
     g_disp = [g for g in n_map.values() if t_map[g] == "DISP"][0]
@@ -76,6 +79,7 @@ def generar_malla_tecnica_pulp(df_raw, n_map, d_map, t_map, m_req, ta_req, tb_re
                 turno_vivo[g] = res_sem.get((g, d_i["sem"]), turno_vivo[g])
             else: hoy_labels[g] = turno_vivo[g]
         
+        # --- Regla de Oro Disponibilidad ---
         if d_i["nom"] == d_map[g_disp]: l_disp = "DESC. LEY"
         else:
             if descansan_hoy:
@@ -86,6 +90,7 @@ def generar_malla_tecnica_pulp(df_raw, n_map, d_map, t_map, m_req, ta_req, tb_re
             else: l_disp = "T1" if u_t_disp != "T2" else "T2"
         
         if "DESC" not in l_disp and "APOYO" not in l_disp: u_t_disp = l_disp[:2]
+        
         for g_id, g_name in n_map.items():
             val = l_disp if g_name == g_disp else hoy_labels.get(g_name, "T1")
             for _, m in df_celulas[df_celulas['grupo'] == g_name].iterrows():
