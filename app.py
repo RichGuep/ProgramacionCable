@@ -112,7 +112,7 @@ if not st.session_state['auth']:
         else:
             st.markdown("<h1 style='color:#10b981;'>GREEN MÓVIL</h1>", unsafe_allow_html=True)
             
-        st.markdown("<h2 style='color:#064e3b; margin-top: 15px;'>MovilGo Admin</h2>", unsafe_allow_html=True)
+        st.markdown("<h2 style='color:#064e3b; margin-top: 36px;'>MovilGo</h2>", unsafe_allow_html=True)
         st.markdown("<p style='color:#718096; margin-bottom: 25px;'>Planificador de turnos</p>", unsafe_allow_html=True)
         
         with st.form("Login"):
