@@ -5,18 +5,18 @@ from datetime import datetime
 import streamlit as st
 
 @st.cache_data
-def load_base(file_path="empleados.xlsx"):
+def load_base():
     try:
-        df = pd.read_excel(file_path)
+        df = pd.read_excel("empleados.xlsx")
         df.columns = df.columns.str.strip().str.lower()
         c_nom = next((c for c in df.columns if 'nom' in c or 'emp' in c), "nombre")
         c_car = next((c for c in df.columns if 'car' in c), "cargo")
         return df.rename(columns={c_nom: 'nombre', c_car: 'cargo'})
-    except:
+    except Exception as e:
         return None
 
-def generar_malla_tecnica(df_raw, n_map, d_map, t_map, m_req, ta_req, tb_req, ano_sel, mes_num, DIAS):
-    # --- Segmentación de Personal ---
+def calcular_malla_tecnica(df_raw, n_map, d_map, t_map, m_req, ta_req, tb_req, ano_sel, mes_num, DIAS):
+    # Lógica de filtrado
     mas = df_raw[df_raw['cargo'].str.contains('Master', case=False)].copy()
     tca = df_raw[df_raw['cargo'].str.contains('Tecnico A', case=False)].copy()
     tcb = df_raw[df_raw['cargo'].str.contains('Tecnico B', case=False)].copy()
@@ -41,7 +41,6 @@ def generar_malla_tecnica(df_raw, n_map, d_map, t_map, m_req, ta_req, tb_req, an
     
     semanas = sorted(list(set([d["sem"] for d in d_info])))
 
-    # --- PuLP Optimization ---
     prob = LpProblem("Malla_MovilGo", LpMinimize)
     asig = LpVariable.dicts("Asig", (g_rotan, semanas, ["T1","T2","T3"]), cat='Binary')
     for s in semanas:
@@ -51,7 +50,6 @@ def generar_malla_tecnica(df_raw, n_map, d_map, t_map, m_req, ta_req, tb_req, an
     prob.solve(PULP_CBC_CMD(msg=0))
     res_sem = {(g, s): t for g in g_rotan for s in semanas for t in ["T1","T2","T3"] if value(asig[g][s][t]) == 1}
 
-    # --- Construcción Matriz ---
     final_rows = []
     g_disp_name = [g for g in n_map.values() if t_map[g] == "DISP"][0]
     
@@ -59,7 +57,6 @@ def generar_malla_tecnica(df_raw, n_map, d_map, t_map, m_req, ta_req, tb_req, an
         desc_hoy = [g for g in g_rotan if d_map[g] == d_i["nom"]]
         hoy_vals = {g: ("DESC. LEY" if d_i["nom"] == d_map[g] else res_sem.get((g, d_i["sem"]), "T1")) for g in g_rotan}
         label_disp = hoy_vals.get(desc_hoy[0], "T1") if desc_hoy else "T1"
-        
         for g in n_map.values():
             val = label_disp if g == g_disp_name else hoy_vals.get(g, "T1")
             for _, m in df_cel[df_cel['grupo'] == g].iterrows():
