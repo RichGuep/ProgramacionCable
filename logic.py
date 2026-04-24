@@ -12,14 +12,12 @@ def load_base():
         c_nom = next((c for c in df.columns if 'nom' in c or 'emp' in c), "nombre")
         c_car = next((c for c in df.columns if 'car' in c), "cargo")
         return df.rename(columns={c_nom: 'nombre', c_car: 'cargo'})
-    except:
-        return None
+    except: return None
 
 def generar_malla_tecnica_pulp(df_raw, n_map, d_map, t_map, m_req, ta_req, tb_req, ano_sel, mes_num):
     DIAS_SEMANA = ["Lunes", "Martes", "Miercoles", "Jueves", "Viernes", "Sabado", "Domingo"]
     LISTA_TURNOS = ["T1", "T2", "T3"]
     
-    # 1. Distribución de personal por grupos
     mas_p = df_raw[df_raw['cargo'].str.contains('Master', case=False)].copy()
     tca_p = df_raw[df_raw['cargo'].str.contains('Tecnico A', case=False)].copy()
     tcb_p = df_raw[df_raw['cargo'].str.contains('Tecnico B', case=False)].copy()
@@ -35,21 +33,13 @@ def generar_malla_tecnica_pulp(df_raw, n_map, d_map, t_map, m_req, ta_req, tb_re
             if not tcb_p.empty: c_list.append({**tcb_p.iloc[0].to_dict(), "grupo": g_name}); tcb_p = tcb_p.iloc[1:]
     
     df_celulas = pd.DataFrame(c_list)
-    
-    # 2. Configuración de tiempo
     g_rotan = [g for g in n_map.values() if t_map[g] == "ROTA"]
     num_dias = calendar.monthrange(ano_sel, mes_num)[1]
-    d_info = [{"n": d, "nom": DIAS_SEMANA[datetime(ano_sel, mes_num, d).weekday()], 
-               "sem": datetime(ano_sel, mes_num, d).isocalendar()[1], 
-               "label": f"{d:02d}-{DIAS_SEMANA[datetime(ano_sel, mes_num, d).weekday()][:3]}"} 
-              for d in range(1, num_dias + 1)]
+    d_info = [{"n": d, "nom": DIAS_SEMANA[datetime(ano_sel, mes_num, d).weekday()], "sem": datetime(ano_sel, mes_num, d).isocalendar()[1], "label": f"{d:02d}-{DIAS_SEMANA[datetime(ano_sel, mes_num, d).weekday()][:3]}"} for d in range(1, num_dias + 1)]
     semanas = sorted(list(set([d["sem"] for d in d_info])))
 
-    # 3. Optimizador PuLP
     prob = LpProblem("MovilGo_Rota", LpMinimize)
     asig = LpVariable.dicts("Asig", (g_rotan, semanas, LISTA_TURNOS), cat='Binary')
-    prob += lpSum([(1 - asig[g][s][t]) for g in g_rotan for s in semanas for t in LISTA_TURNOS])
-    
     for s in semanas:
         for t in LISTA_TURNOS: prob += lpSum([asig[g][s][t] for g in g_rotan]) == 1
         for g in g_rotan: prob += lpSum([asig[g][s][t] for t in LISTA_TURNOS]) == 1
@@ -64,7 +54,6 @@ def generar_malla_tecnica_pulp(df_raw, n_map, d_map, t_map, m_req, ta_req, tb_re
     prob.solve(PULP_CBC_CMD(msg=0))
     res_semanal = {(g, s): t for g in g_rotan for s in semanas for t in LISTA_TURNOS if value(asig[g][s][t]) == 1}
 
-    # 4. Construcción día a día (Regla de Oro)
     final_rows = []
     turno_vivo = {g: res_semanal.get((g, semanas[0]), "T1") for g in g_rotan}
     g_disp = [g for g in n_map.values() if t_map[g] == "DISP"][0]
@@ -77,12 +66,9 @@ def generar_malla_tecnica_pulp(df_raw, n_map, d_map, t_map, m_req, ta_req, tb_re
             if d_i["nom"] == d_map[g]:
                 hoy_labels[g] = "DESC. LEY"
                 turno_vivo[g] = res_semanal.get((g, d_i["sem"]), turno_vivo[g])
-            else:
-                hoy_labels[g] = turno_vivo[g]
+            else: hoy_labels[g] = turno_vivo[g]
         
-        # Lógica de Disponibilidad (Cubre descansos con bloqueos de seguridad)
-        if d_i["nom"] == d_map[g_disp]:
-            label_disp = "DESC. LEY"
+        if d_i["nom"] == d_map[g_disp]: label_disp = "DESC. LEY"
         else:
             if descansan_hoy:
                 g_a_cubrir = descansan_hoy[0]
@@ -90,39 +76,26 @@ def generar_malla_tecnica_pulp(df_raw, n_map, d_map, t_map, m_req, ta_req, tb_re
                 if ultimo_turno_disp == "T3": label_disp = "APOYO (Post-Noche)"
                 elif ultimo_turno_disp == "T2" and t_necesario == "T1": label_disp = "T2 (Apoyo)"
                 else: label_disp = t_necesario
-            else:
-                label_disp = "T1" if ultimo_turno_disp != "T2" else "T2"
+            else: label_disp = "T1" if ultimo_turno_disp != "T2" else "T2"
         
         if "DESC" not in label_disp and "APOYO" not in label_disp: ultimo_turno_disp = label_disp[:2]
-
         for g in n_map.values():
             val_final = label_disp if g == g_disp else hoy_labels[g]
             for _, m in df_celulas[df_celulas['grupo'] == g].iterrows():
                 final_rows.append({"Grupo": g, "Empleado": m['nombre'], "Cargo": m['cargo'], "Label": d_i["label"], "Final": val_final})
-                
     return pd.DataFrame(final_rows)
 
 def generar_malla_auxiliares_pool(df_raw, aux_n_map, aux_d_map, ano_sel, mes_num):
     DIAS_SEMANA = ["Lunes", "Martes", "Miercoles", "Jueves", "Viernes", "Sabado", "Domingo"]
-    cargo_aux = "Auxiliar de Abordaje y Atención al Público"
-    df_aux = df_raw[df_raw['cargo'].str.contains(cargo_aux, case=False, na=False)].copy()
-    
+    df_aux = df_raw[df_raw['cargo'].str.contains("Auxiliar", case=False, na=False)].copy().reset_index(drop=True)
     if df_aux.empty: return None
-
-    df_aux = df_aux.reset_index(drop=True)
     df_aux['equipo'] = [aux_n_map[i // 5] for i in range(len(df_aux))]
-    
     num_dias = calendar.monthrange(ano_sel, mes_num)[1]
-    d_info_ax = [{"n": d, "nom": DIAS_SEMANA[datetime(ano_sel, mes_num, d).weekday()], 
-                  "sem": datetime(ano_sel, mes_num, d).isocalendar()[1], 
-                  "label": f"{d:02d}-{DIAS_SEMANA[datetime(ano_sel, mes_num, d).weekday()][:3]}"} 
-                 for d in range(1, num_dias + 1)]
+    d_info_ax = [{"n": d, "nom": DIAS_SEMANA[datetime(ano_sel, mes_num, d).weekday()], "sem": datetime(ano_sel, mes_num, d).isocalendar()[1], "label": f"{d:02d}-{DIAS_SEMANA[datetime(ano_sel, mes_num, d).weekday()][:3]}"} for d in range(1, num_dias + 1)]
     semanas_ax = sorted(list(set([d["sem"] for d in d_info_ax])))
-    
     rows_ax = []
     for s_idx, sem in enumerate(semanas_ax):
         pool = ["T1", "T1", "T2", "T2", "DISPONIBILIDAD"]
-        # Rotación del pool por semana
         turnos_semana = pool[-(s_idx % 5):] + pool[:-(s_idx % 5)]
         for d_i in [d for d in d_info_ax if d["sem"] == sem]:
             for eq_idx in range(5):
@@ -130,5 +103,4 @@ def generar_malla_auxiliares_pool(df_raw, aux_n_map, aux_d_map, ano_sel, mes_num
                 final_t = "DESC. LEY" if d_i["nom"] == aux_d_map[eq_name] else turnos_semana[eq_idx]
                 for _, emp in df_aux[df_aux['equipo'] == eq_name].iterrows():
                     rows_ax.append({"Equipo": eq_name, "Empleado": emp['nombre'], "Label": d_i["label"], "Turno": final_t})
-    
     return pd.DataFrame(rows_ax)
