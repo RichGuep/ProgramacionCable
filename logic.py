@@ -180,10 +180,16 @@ def generar_malla_auxiliares_pool(df_raw, aux_n_map, aux_d_map, ano_sel, mes_num
     return pd.DataFrame(rows_ax)
 
 def reconstruir_malla_desde_json(json_str):
-    """Utilidad para recuperar mallas del histórico de forma segura."""
+    """Recupera la malla asegurando que el formato sea válido."""
     try:
         if pd.isna(json_str) or str(json_str).strip() == "":
             return None
-        return pd.read_json(io.StringIO(str(json_str)))
-    except Exception:
+        
+        # Intentamos limpiar posibles espacios o caracteres invisibles al inicio/final
+        json_limpio = str(json_str).strip()
+        
+        # Usamos orient='records' o el default dependiendo de cómo se guardó
+        return pd.read_json(io.StringIO(json_limpio))
+    except Exception as e:
+        st.error(f"Error técnico en JSON: {e}")
         return None
