@@ -154,12 +154,23 @@ def run_app():
         with tab3:
             st.subheader("Consultar Histórico")
             df_h_view = leer_excel_de_github("historico_mallas.xlsx")
+            
             if df_h_view is not None and not df_h_view.empty:
+                # Ordenar por fecha
                 df_h_view = df_h_view.sort_values(by="Fecha", ascending=False)
+                
                 opciones = range(len(df_h_view))
+                
+                # FUNCIÓN DE FORMATO CORREGIDA (Evita el KeyError)
                 def fmt(x): 
                     row = df_h_view.iloc[x]
-                    return f"{row['Tipo']} | {row['Alcance']} | {row['Mes']} {row['Año']} ({row['Fecha']})"
+                    # Validamos si existen las columnas, si no, ponemos valores por defecto
+                    tipo = row.get('Tipo', 'Técnica')
+                    alcance_val = row.get('Alcance', 'Mes Completo')
+                    mes = row.get('Mes', 'N/A')
+                    ano = row.get('Año', '')
+                    fecha = row.get('Fecha', 'S/F')
+                    return f"{tipo} | {alcance_val} | {mes} {ano} ({fecha})"
                 
                 sel = st.selectbox("Versiones disponibles", opciones, format_func=fmt)
                 
@@ -168,15 +179,26 @@ def run_app():
                     if m_rec is not None:
                         st.session_state['malla_viz'] = m_rec
                         st.session_state['info_viz'] = fmt(sel)
-                    else: st.error("Error al leer el archivo (posible corrupción).")
+                    else: 
+                        st.error("Error al leer el archivo (posible corrupción o formato antiguo).")
 
                 if 'malla_viz' in st.session_state:
                     st.divider()
                     st.success(f"Visualizando: {st.session_state['info_viz']}")
                     df_v = st.session_state['malla_viz']
-                    piv_v = df_v.pivot(index=['Grupo', 'Empleado', 'Cargo'], columns='Label', values='Final')
-                    st.dataframe(piv_v[sorted(piv_v.columns, key=lambda x: int(str(x).split('-')[0]))].style.map(estilo_malla), use_container_width=True)
-            else: st.info("No hay historial.")
+                    
+                    # Verificamos qué tipo de malla es para pivotar correctamente
+                    try:
+                        if 'Grupo' in df_v.columns:
+                            piv_v = df_v.pivot(index=['Grupo', 'Empleado', 'Cargo'], columns='Label', values='Final')
+                            st.dataframe(piv_v[sorted(piv_v.columns, key=lambda x: int(str(x).split('-')[0]))].style.map(estilo_malla), use_container_width=True)
+                        elif 'Equipo' in df_v.columns:
+                            piv_v = df_v.pivot(index=['Equipo', 'Empleado'], columns='Label', values='Turno')
+                            st.dataframe(piv_v[sorted(piv_v.columns, key=lambda x: int(str(x).split('-')[0]))].style.map(estilo_ax), use_container_width=True)
+                    except Exception as e:
+                        st.error(f"Error al organizar la tabla: {e}")
+            else: 
+                st.info("No hay historial guardado.")
 
     # (Módulos de Inicio, Base de Datos y Usuarios se mantienen igual)
 
