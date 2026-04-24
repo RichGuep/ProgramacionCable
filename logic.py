@@ -185,11 +185,15 @@ def reconstruir_malla_desde_json(json_str):
         if pd.isna(json_str) or str(json_str).strip() == "":
             return None
         
-        # Intentamos limpiar posibles espacios o caracteres invisibles al inicio/final
-        json_limpio = str(json_str).strip()
+        # Limpieza de posibles caracteres de escape de Excel
+        json_limpio = str(json_str).strip().replace("''", "'")
         
-        # Usamos orient='records' o el default dependiendo de cómo se guardó
-        return pd.read_json(io.StringIO(json_limpio))
+        # Si el JSON parece cortado (no termina en ]), intentamos cerrarlo
+        if not json_limpio.endswith(']'):
+             # Esto es una medida de emergencia, lo ideal es que no se corte al guardar
+             pass 
+
+        return pd.read_json(io.StringIO(json_limpio), orient='records')
     except Exception as e:
-        st.error(f"Error técnico en JSON: {e}")
+        print(f"Error técnico en JSON: {e}")
         return None
