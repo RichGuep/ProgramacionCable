@@ -12,7 +12,7 @@ st.set_page_config(
 )
 
 # ID DE TU LOGO (Extraído de tu link)
-LOGO_URL = "https://drive.google.com/uc?id=16oqiPZoHcGcfmJIuOntRyFywnHF48sd1"
+LOGO_URL = "https://drive.google.com/16oqiPZoHcGcfmJIuOntRyFywnHF48sd1/view?usp=drive_link"
 
 # --- 2. ESTILOS CSS PERSONALIZADOS (Vanguardia) ---
 st.markdown(f"""
