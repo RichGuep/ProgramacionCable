@@ -24,7 +24,7 @@ def run_app():
     if os.path.exists("usuarios.xlsx"):
         df_users = pd.read_excel("usuarios.xlsx")
     else:
-        # Base inicial por si el archivo no existe
+        # Base inicial por si el archivo no existe en el primer despliegue
         df_users = pd.DataFrame(columns=["Nombre", "Correo", "Rol", "Password"])
 
     # --- LÓGICA DE LOGIN ---
@@ -41,10 +41,10 @@ def run_app():
                 u = st.text_input("Usuario Corporativo")
                 p = st.text_input("Contraseña", type="password")
                 if st.form_submit_button("INGRESAR AL PANEL"):
-                    # Verificación contra Excel
+                    # Verificación contra Excel de GitHub
                     user_match = df_users[(df_users['Correo'] == u) & (df_users['Password'].astype(str) == p)]
                     
-                    # SuperAdmin por defecto (Siempre tiene acceso)
+                    # Acceso Maestro (Richard siempre entra)
                     if u == "richard.guevara@greenmovil.com.co" and p == "Admin2026":
                         st.session_state['auth'] = True
                         st.session_state['rol'] = "Admin"
@@ -54,11 +54,11 @@ def run_app():
                         st.session_state['rol'] = user_match.iloc[0]['Rol']
                         st.rerun()
                     else:
-                        st.error("Credenciales incorrectas o usuario no registrado")
+                        st.error("Credenciales incorrectas. Verifique su usuario y contraseña.")
             st.markdown('</div>', unsafe_allow_html=True)
         return
 
-    # --- PANEL PRINCIPAL (Solo usuarios autenticados) ---
+    # --- PANEL PRINCIPAL ---
     df_raw = load_base()
     
     with st.sidebar:
@@ -67,7 +67,6 @@ def run_app():
         st.markdown("<hr>", unsafe_allow_html=True)
         
         menu_options = ["🏠 Inicio", "📊 Gestión de Mallas", "👥 Base de Datos"]
-        # Solo el Admin ve el menú de Usuarios
         if st.session_state['rol'] == "Admin":
             menu_options.append("⚙️ Usuarios")
             
@@ -75,7 +74,7 @@ def run_app():
         
         st.divider()
         meses = ["Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio", "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"]
-        mes_sel = st.selectbox("Mes de Programación", meses, index=datetime.now().month - 1)
+        mes_sel = st.selectbox("Mes", meses, index=datetime.now().month - 1)
         ano_sel = st.selectbox("Año", [2025, 2026], index=1)
         mes_num = meses.index(mes_sel) + 1
         
@@ -84,70 +83,73 @@ def run_app():
             st.rerun()
 
     # --- NAVEGACIÓN ---
-    
     if menu == "🏠 Inicio":
         st.markdown(f"""
             <div style="background: linear-gradient(135deg, #064e3b 0%, #10b981 100%); padding: 3rem; border-radius: 20px; color: white; text-align: center;">
-                <h1>Panel de Control MovilGo</h1>
-                <p>Rol: {st.session_state['rol']} | Período: {mes_sel} {ano_sel}</p>
+                <h1>Bienvenido al Sistema MovilGo</h1>
+                <p>Rol actual: {st.session_state['rol']} | Período: {mes_sel} {ano_sel}</p>
             </div>
         """, unsafe_allow_html=True)
         
         c1, c2, c3 = st.columns(3)
-        c1.metric("Estado del Sistema", "Sincronizado", "GitHub OK")
-        c2.metric("Base de Datos", f"{len(df_raw) if df_raw is not None else 0} Empleados")
-        c3.metric("Acceso", st.session_state['rol'])
+        c1.metric("Personal Técnico", "Activo", "Malla PuLP")
+        c2.metric("Sincronización", "GitHub", "Conectado")
+        c3.metric("Seguridad", st.session_state['rol'], "Nivel Acceso")
 
     elif menu == "📊 Gestión de Mallas":
+        # Restricción de rol Visualizador
         if st.session_state['rol'] == "Visualizador":
-            st.warning("Tu rol es de solo lectura. No puedes generar nuevas mallas.")
+            st.warning("⚠️ Su cuenta tiene rol de 'Visualizador'. No tiene permisos para modificar parámetros o generar nuevas mallas.")
         
-        tab1, tab2 = st.tabs(["Planta Técnica (T1-T2-T3)", "Auxiliares de Abordaje"])
+        tab1, tab2 = st.tabs(["Planta Técnica", "Auxiliares"])
 
         with tab1:
-            st.subheader("Configuración de Grupos Técnicos")
+            st.subheader("Configuración Planta Técnica")
             col_cfg = st.columns(3)
             m_req = col_cfg[0].number_input("Masters", 1, 5, 2)
-            ta_req = col_cfg[1].number_input("Técnicos A", 1, 15, 7)
-            tb_req = col_cfg[2].number_input("Técnicos B", 1, 10, 3)
+            ta_req = col_cfg[1].number_input("Tec A", 1, 15, 7)
+            tb_req = col_cfg[2].number_input("Tec B", 1, 10, 3)
 
-            with st.expander("📅 Configuración de Descansos y Disponibilidad", expanded=True):
+            with st.expander("📅 Grupos y Descansos", expanded=True):
                 n_map, d_map, t_map = {}, {}, {}
                 cols = st.columns(4)
                 for i in range(4):
                     with cols[i]:
                         g_id = f"G{i+1}"
                         n_s = st.text_input(f"Nombre {g_id}", f"GRUPO {i+1}", key=f"n_b_{i}")
-                        d_s = st.selectbox(f"Descanso", DIAS_SEMANA, index=i % 7, key=f"d_b_{i}")
-                        es_disp = st.checkbox("Disponibilidad", value=(i==3), key=f"t_b_{i}")
+                        d_s = st.selectbox(f"Descanso {g_id}", DIAS_SEMANA, index=i % 7, key=f"d_b_{i}")
+                        es_disp = st.checkbox(f"Disponible {g_id}", value=(i==3), key=f"t_b_{i}")
                         n_map[g_id] = n_s; d_map[n_s] = d_s; t_map[n_s] = "DISP" if es_disp else "ROTA"
 
             if st.button("⚡ GENERAR MALLA TÉCNICA"):
-                if df_raw is not None:
+                if st.session_state['rol'] == "Visualizador":
+                    st.error("Acción no permitida.")
+                elif df_raw is not None:
                     df_f = generar_malla_tecnica_pulp(df_raw, n_map, d_map, t_map, m_req, ta_req, tb_req, ano_sel, mes_num)
                     piv = df_f.pivot(index=['Grupo', 'Empleado', 'Cargo'], columns='Label', values='Final')
                     cols_ord = sorted(piv.columns, key=lambda x: int(x.split('-')[0]))
                     st.dataframe(piv[cols_ord].style.map(estilo_malla), use_container_width=True)
-                else:
-                    st.error("Cargue la base de empleados primero.")
 
         with tab2:
-            st.subheader("Configuración de Equipos Auxiliares")
-            with st.expander("📅 Descansos por Equipo (Pool Rotativo)", expanded=True):
+            st.subheader("Configuración Auxiliares")
+            with st.expander("📅 Equipos Auxiliares", expanded=True):
                 aux_n_map, aux_d_map = {}, {}
                 cols_ax = st.columns(5)
                 for i in range(5):
                     with cols_ax[i]:
                         n_eq = st.text_input(f"Equipo {i+1}", f"EQ-{chr(65+i)}", key=f"ax_n_{i}")
-                        d_eq = st.selectbox(f"Descanso", DIAS_SEMANA, index=i, key=f"ax_d_{i}")
+                        d_eq = st.selectbox(f"Descanso Aux {i+1}", DIAS_SEMANA, index=i, key=f"ax_d_{i}")
                         aux_n_map[i] = n_eq; aux_d_map[n_eq] = d_eq
 
             if st.button("⚡ GENERAR MALLA AUXILIARES"):
-                df_res_ax = generar_malla_auxiliares_pool(df_raw, aux_n_map, aux_d_map, ano_sel, mes_num)
-                if df_res_ax is not None:
-                    piv_ax = df_res_ax.pivot(index=['Equipo', 'Empleado'], columns='Label', values='Turno')
-                    cols_ax_ord = sorted(piv_ax.columns, key=lambda x: int(x.split('-')[0]))
-                    st.dataframe(piv_ax[cols_ax_ord].style.map(estilo_ax), use_container_width=True)
+                if st.session_state['rol'] == "Visualizador":
+                    st.error("Acción no permitida.")
+                else:
+                    df_res_ax = generar_malla_auxiliares_pool(df_raw, aux_n_map, aux_d_map, ano_sel, mes_num)
+                    if df_res_ax is not None:
+                        piv_ax = df_res_ax.pivot(index=['Equipo', 'Empleado'], columns='Label', values='Turno')
+                        cols_ax_ord = sorted(piv_ax.columns, key=lambda x: int(x.split('-')[0]))
+                        st.dataframe(piv_ax[cols_ax_ord].style.map(estilo_ax), use_container_width=True)
 
     elif menu == "👥 Base de Datos":
         st.header("Base de Datos Maestra")
@@ -156,23 +158,22 @@ def run_app():
             buffer = io.BytesIO()
             with pd.ExcelWriter(buffer, engine='xlsxwriter') as writer:
                 df_raw.to_excel(writer, index=False)
-            st.download_button("📥 Descargar Backup", data=buffer.getvalue(), file_name="respaldo_empleados.xlsx")
+            st.download_button("📥 Descargar Copia Seguridad", data=buffer.getvalue(), file_name="respaldo_datos.xlsx")
 
     elif menu == "⚙️ Usuarios":
-        # Protección extra de seguridad
         if st.session_state['rol'] != "Admin":
-            st.error("Acceso restringido")
+            st.error("Área restringida solo para administradores.")
             return
 
         st.header("Gestión de Usuarios y Roles")
-        t_crear, t_lista = st.tabs(["Crear Usuario", "Lista de Accesos"])
+        t_crear, t_lista = st.tabs(["Crear Nuevo Usuario", "Lista de Accesos"])
 
         with t_crear:
-            with st.form("registro_usuarios_github"):
-                st.subheader("Nuevo Perfil de Acceso")
+            with st.form("form_usuarios_github"):
+                st.subheader("Registrar nuevo personal con acceso")
                 new_nom = st.text_input("Nombre Completo")
-                new_cor = st.text_input("Correo (Usuario)")
-                new_rol = st.selectbox("Rol de Sistema", ["Admin", "Planificador", "Visualizador"])
+                new_cor = st.text_input("Correo (Usuario de ingreso)")
+                new_rol = st.selectbox("Rol en el Sistema", ["Admin", "Planificador", "Visualizador"])
                 new_pwd = st.text_input("Contraseña Temporal", type="password")
                 
                 # BOTÓN DENTRO DEL FORMULARIO
@@ -183,19 +184,20 @@ def run_app():
                         # Crear el nuevo registro
                         nuevo_u = pd.DataFrame([[new_nom, new_cor, new_rol, new_pwd]], 
                                                 columns=["Nombre", "Correo", "Rol", "Password"])
-                        # Unir con la lista existente
-                        df_users = pd.concat([df_users, nuevo_u], ignore_index=True)
+                        # Unir con la lista cargada al inicio
+                        df_users_final = pd.concat([df_users, nuevo_u], ignore_index=True)
                         
                         # Guardar localmente
-                        df_users.to_excel("usuarios.xlsx", index=False)
+                        df_users_final.to_excel("usuarios.xlsx", index=False)
                         
-                        # Subir a GitHub
-                        if guardar_excel_en_github(df_users, "usuarios.xlsx"):
-                            st.success(f"Usuario {new_nom} creado y sincronizado.")
+                        # Subir a GitHub y mostrar éxito
+                        if guardar_excel_en_github(df_users_final, "usuarios.xlsx"):
+                            st.success(f"✅ ¡Usuario '{new_nom}' creado y sincronizado con GitHub exitosamente!")
+                            st.balloons() # Toque visual de éxito
                             st.rerun()
                     else:
-                        st.warning("Complete todos los campos del formulario.")
+                        st.warning("⚠️ Todos los campos son obligatorios.")
 
         with t_lista:
-            st.subheader("Usuarios con Acceso al Sistema")
+            st.subheader("Usuarios Registrados")
             st.table(df_users[["Nombre", "Correo", "Rol"]])
