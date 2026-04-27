@@ -23,8 +23,13 @@ def commit_to_github():
 
 def read_db(table_name):
     try:
-        return pd.read_sql(f"SELECT * FROM {table_name}", engine)
-    except:
+        df = pd.read_sql(f"SELECT * FROM {table_name}", engine)
+        if df.empty:
+            st.warning(f"La tabla {table_name} está vacía.")
+        return df
+    except Exception as e:
+        # Esto nos dirá si la tabla ni siquiera ha sido creada
+        st.error(f"Error al leer {table_name}: {e}")
         return None
 
 def save_db(df, table_name):
