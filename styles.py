@@ -5,20 +5,21 @@ def estilo_malla(val):
     color = ""
     background = ""
     if val == "T1":
-        background = "#d1fae5"
+        background = "#d1fae5" # Verde esmeralda claro
         color = "#065f46"
     elif val == "T2":
-        background = "#fef3c7"
+        background = "#fef3c7" # Ámbar claro
         color = "#92400e"
     elif val == "T3":
-        background = "#fee2e2"
+        background = "#fee2e2" # Rojo suave
         color = "#991b1b"
     elif "DESC" in str(val):
-        background = "#f3f4f6"
+        background = "#f3f4f6" # Gris neutro
         color = "#374151"
     elif "APOYO" in str(val):
-        background = "#e0e7ff"
+        background = "#e0e7ff" # Indigo suave
         color = "#3730a3"
+    
     return f"background-color: {background}; color: {color}; border: 1px solid #e5e7eb;"
 
 def estilo_ax(val):
@@ -37,6 +38,7 @@ def estilo_ax(val):
     elif "DESC" in str(val):
         background = "#f9fafb"
         color = "#6b7280"
+    
     return f"background-color: {background}; color: {color};"
 
 def get_login_styles():
@@ -97,5 +99,10 @@ def apply_global_styles():
         <style>
             .stApp { background-color: #f8fafc; }
             [data-testid="stSidebar"] { background-color: #ffffff; border-right: 1px solid #e2e8f0; }
+            /* Estilo para mejorar la visualización de tablas */
+            .stDataFrame {
+                border: 1px solid #e2e8f0;
+                border-radius: 10px;
+            }
         </style>
     """, unsafe_allow_html=True)
