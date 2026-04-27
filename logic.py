@@ -21,9 +21,9 @@ def load_base():
         st.error(f"Error al cargar empleados.xlsx: {e}")
         return None
 
-def generar_malla_tecnica_pulp(df_raw, n_map, d_map, t_map, m_req, ta_req, tb_req, ano_sel, mes_num, alcance="Mes Completo", semana_inicio=1, estado_anterior=None):
+def generar_malla_tecnica_pulp(df_raw, n_map, d_map, t_map, m_req, ta_req, tb_req, ano_sel, mes_num, horarios_dict, alcance="Mes Completo", semana_inicio=1, estado_anterior=None):
     """
-    Motor de optimización con filtrado por alcance (Semanal, Quincenal, Mensual).
+    Motor de optimización con filtrado por alcance y PARAMETRIZACIÓN DE HORARIOS.
     """
     DIAS_SEMANA = ["Lunes", "Martes", "Miercoles", "Jueves", "Viernes", "Sabado", "Domingo"]
     LISTA_TURNOS = ["T1", "T2", "T3"]
@@ -56,7 +56,6 @@ def generar_malla_tecnica_pulp(df_raw, n_map, d_map, t_map, m_req, ta_req, tb_re
     d_info_completo = []
     for d in range(1, num_dias + 1):
         fecha = datetime(ano_sel, mes_num, d)
-        # Calculamos la semana del mes (1 a 5)
         sem_del_mes = (d - 1) // 7 + 1
         d_info_completo.append({
             "n": d, 
@@ -66,7 +65,6 @@ def generar_malla_tecnica_pulp(df_raw, n_map, d_map, t_map, m_req, ta_req, tb_re
             "label": f"{d:02d}-{DIAS_SEMANA[fecha.weekday()][:3]}"
         })
 
-    # Aplicar el filtro según lo elegido en el Sidebar
     if alcance == "1 Semana":
         d_info = [d for d in d_info_completo if d["sem_mes"] == semana_inicio]
     elif alcance == "2 Semanas":
@@ -97,7 +95,6 @@ def generar_malla_tecnica_pulp(df_raw, n_map, d_map, t_map, m_req, ta_req, tb_re
             prob += asig[g][s1]["T2"] <= asig[g][s2]["T3"]
             prob += asig[g][s1]["T3"] <= asig[g][s2]["T1"]
 
-    # Empalme (Memoria)
     if estado_anterior:
         s_ini = semanas[0]
         for g_n, ult_t in estado_anterior.items():
@@ -111,7 +108,6 @@ def generar_malla_tecnica_pulp(df_raw, n_map, d_map, t_map, m_req, ta_req, tb_re
     res_sem = {(g, s): t for g in g_rotan for s in semanas for t in LISTA_TURNOS if value(asig[g][s][t]) == 1}
     final_rows = []
     
-    # Iniciamos turnos base
     turno_vivo = {g: res_sem.get((g, semanas[0]), "T1") for g in g_rotan}
     g_disp = [g for g in n_map.values() if t_map[g] == "DISP"][0]
     u_t_disp = "T1"
@@ -126,7 +122,6 @@ def generar_malla_tecnica_pulp(df_raw, n_map, d_map, t_map, m_req, ta_req, tb_re
             else:
                 hoy_labels[g] = turno_vivo[g]
         
-        # Disponibilidad
         if d_i["nom"] == d_map[g_disp]: l_disp = "DESC. LEY"
         else:
             if descansan_hoy:
@@ -141,17 +136,30 @@ def generar_malla_tecnica_pulp(df_raw, n_map, d_map, t_map, m_req, ta_req, tb_re
 
         for g_id, g_name in n_map.items():
             val = l_disp if g_name == g_disp else hoy_labels.get(g_name, "T1")
+            
+            # DETERMINAR HORARIO DINÁMICO
+            # Si el turno está en nuestro diccionario de horarios, lo extraemos
+            horario_str = ""
+            if val in horarios_dict:
+                h = horarios_dict[val]
+                horario_str = f"{h['inicio']} - {h['fin']}"
+            
             for _, m in df_celulas[df_celulas['grupo'] == g_name].iterrows():
                 final_rows.append({
-                    "Grupo": g_name, "Empleado": m['nombre'], "Cargo": m['cargo'], 
-                    "Label": d_i["label"], "Final": val, "n_dia": d_i["n"]
+                    "Grupo": g_name, 
+                    "Empleado": m['nombre'], 
+                    "Cargo": m['cargo'], 
+                    "Horario": horario_str, # <--- Nueva columna parametrizada
+                    "Label": d_i["label"], 
+                    "Final": val, 
+                    "n_dia": d_i["n"]
                 })
                 
     return pd.DataFrame(final_rows)
 
 def generar_malla_auxiliares_pool(df_raw, aux_n_map, aux_d_map, ano_sel, mes_num):
-    # (Se mantiene igual que la versión anterior)
-    pass
+    # Se mantiene la estructura para auxiliares si decides implementarlo luego
+    return pd.DataFrame()
 
 def reconstruir_malla_desde_json(json_str):
     try:
