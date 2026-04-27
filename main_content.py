@@ -55,10 +55,11 @@ def run_app():
 
     # --- MODULO: GESTIÓN DE MALLAS ---
     if st.session_state['menu_actual'] == "📊 Gestión de Mallas":
-        st.header("📊 Programación de Operaciones")
-        tab1, tab2, tab3 = st.tabs(["⚙️ Parámetros", "⚡ Vista Previa y Resumen", "📜 Histórico"])
+        st.header("📊 Programación Operativa de Turnos")
+        tab1, tab2, tab3 = st.tabs(["⚙️ Parámetros y Turnos", "⚡ Vista Horizontal y Resumen", "📜 Histórico"])
 
         with tab1:
+            # 1. Rango de Fechas y Cupos
             c_fechas, c_cupos = st.columns([1.5, 2])
             with c_fechas:
                 st.subheader("📅 Período")
@@ -68,14 +69,14 @@ def run_app():
                 st.subheader("👥 Cupos y 🕒 Horarios")
                 c1, c2, c3 = st.columns(3)
                 m_cupo = c1.number_input("Masters", 1, 10, 2)
-                t1_h = c1.text_input("Horario T1", "06:00-14:00")
+                t1_h = c1.text_input("T1 (Mañana)", "06:00-14:00")
                 a_cupo = c2.number_input("Tec A", 1, 20, 7)
-                t2_h = c2.text_input("Horario T2", "14:00-22:00")
+                t2_h = c2.text_input("T2 (Tarde)", "14:00-22:00")
                 b_cupo = c3.number_input("Tec B", 1, 20, 3)
-                t3_h = c3.text_input("Horario T3", "22:00-06:00")
+                t3_h = c3.text_input("T3 (Noche)", "22:00-06:00")
 
             st.divider()
-            st.subheader("🛠️ Grupos")
+            st.subheader("🛠️ Configuración de Grupos")
             n_map, d_map, t_map = {}, {}, {}
             cols_g = st.columns(4)
             for i in range(4):
@@ -86,12 +87,12 @@ def run_app():
                     tip = st.radio(f"Tipo", ["ROTA", "DISP"], index=0 if i<3 else 1, key=f"gt_{i}")
                     n_map[f"G{i+1}"], d_map[nom], t_map[nom] = nom, des, tip
 
-            if st.button("🚀 GENERAR PROGRAMACIÓN", use_container_width=True):
+            if st.button("🚀 GENERAR MALLA ÓPTIMA", use_container_width=True):
                 if len(rango) == 2:
                     st.session_state['horarios'] = {"T1": t1_h, "T2": t2_h, "T3": t3_h}
                     f_i, f_f = rango
-                    malla = generar_malla_tecnica_pulp(df_raw, n_map, d_map, t_map, m_cupo, a_cupo, b_cupo, f_i.year, f_i.month, {"inicio": f_i, "fin": f_f})
-                    st.session_state['temp_malla'] = malla
+                    malla_long = generar_malla_tecnica_pulp(df_raw, n_map, d_map, t_map, m_cupo, a_cupo, b_cupo, f_i.year, f_i.month, {"inicio": f_i, "fin": f_f})
+                    st.session_state['temp_malla'] = malla_long
                     st.session_state['rango_ref'] = rango
                     st.success("Malla generada con éxito.")
                 else:
@@ -99,97 +100,96 @@ def run_app():
 
         with tab2:
             if 'temp_malla' in st.session_state:
+                df_long = st.session_state['temp_malla']
                 f_i, f_f = st.session_state['rango_ref']
-                malla_original = st.session_state['temp_malla']
-                
+                h = st.session_state.get('horarios', {})
+
+                # --- TRANSFORMACIÓN A VISTA HORIZONTAL ---
+                # Pivotamos la tabla: Empleados en filas, Días en columnas
+                df_horiz = df_long.pivot_table(
+                    index=['Grupo', 'Empleado', 'Cargo'], 
+                    columns='Label', 
+                    values='Final', 
+                    aggfunc='first'
+                ).reset_index()
+
                 st.subheader("🔍 Filtros de Visualización")
-                col_f1, col_f2, col_f3 = st.columns(3)
-                
-                with col_f1:
-                    filtro_grupo = st.multiselect("Filtrar por Grupo", options=malla_original['Grupo'].unique())
-                with col_f2:
-                    filtro_persona = st.multiselect("Filtrar por Técnico", options=malla_original['Empleado'].unique())
-                with col_f3:
-                    # Filtro de sub-rango de fechas dentro de la malla
-                    dias_malla = [col for col in malla_original.columns if col not in ['Grupo', 'Empleado', 'Cargo', 'Horario']]
-                    rango_v = st.select_slider("Ver días específicos", options=dias_malla, value=(dias_malla[0], dias_malla[-1]))
+                f1, f2, f3 = st.columns(3)
+                with f1: g_sel = st.multiselect("Filtrar por Grupo", df_horiz['Grupo'].unique())
+                with f2: r_sel = st.multiselect("Filtrar por Rol (Cargo)", df_horiz['Cargo'].unique())
+                with f3: p_sel = st.multiselect("Filtrar por Persona", df_horiz['Empleado'].unique())
 
-                # Aplicar Filtros a la data
-                df_view = malla_original.copy()
-                if filtro_grupo:
-                    df_view = df_view[df_view['Grupo'].isin(filtro_grupo)]
-                if filtro_persona:
-                    df_view = df_view[df_view['Empleado'].isin(filtro_persona)]
-                
-                # Seleccionar columnas (Info básica + Rango de días filtrado)
-                cols_basicas = ['Grupo', 'Empleado', 'Cargo']
-                idx_ini = dias_malla.index(rango_v[0])
-                idx_fin = dias_malla.index(rango_v[1]) + 1
-                cols_dias = dias_malla[idx_ini:idx_fin]
-                
-                df_view = df_view[cols_basicas + cols_dias]
+                df_f = df_horiz.copy()
+                if g_sel: df_f = df_f[df_f['Grupo'].isin(g_sel)]
+                if r_sel: df_f = df_f[df_f['Cargo'].isin(r_sel)]
+                if p_sel: df_f = df_f[df_f['Empleado'].isin(p_sel)]
 
-                st.divider()
-                st.subheader(f"📅 Cronograma Horizontal ({rango_v[0]} al {rango_v[1]})")
-                st.dataframe(df_view.style.map(estilo_malla), use_container_width=True)
+                st.subheader(f"📅 Cronograma de Turnos ({f_i.strftime('%d/%m')} - {f_f.strftime('%d/%m')})")
+                st.caption(f"Horarios: T1: {h.get('T1')} | T2: {h.get('T2')} | T3: {h.get('T3')}")
+                st.dataframe(df_f.style.map(estilo_malla), use_container_width=True)
 
                 # --- RESUMEN EJECUTIVO DETALLADO ---
                 st.divider()
-                st.subheader("📊 Resumen Ejecutivo Detallado")
+                st.subheader("📊 Resumen Ejecutivo: Cobertura Diaria")
                 
-                # Elegir día para ver detalle de turnos y roles
-                dia_analisis = st.selectbox("Seleccione día para análisis de cobertura", options=cols_dias)
-                
-                # Crear matriz de Cobertura: Turno vs Rol
-                cobertura = df_view[['Cargo', dia_analisis]].groupby(['Cargo', dia_analisis]).size().unstack(fill_value=0)
-                
-                col_res1, col_res2 = st.columns([2, 1])
-                with col_res1:
-                    st.markdown(f"**Distribución de Roles en Turnos ({dia_analisis})**")
-                    st.table(cobertura)
-                
-                with col_res2:
-                    st.markdown("**Totales del día**")
-                    total_dia = df_view[dia_analisis].value_counts()
-                    st.write(f"✅ En Turno: {total_dia.get('T1',0) + total_dia.get('T2',0) + total_dia.get('T3',0)}")
-                    st.write(f"🛌 Descansos: {total_dia.get('D', 0)}")
-                    st.write(f"📞 Disponibles: {total_dia.get('X', 0)}")
+                dias_cols = [c for c in df_f.columns if c not in ['Grupo', 'Empleado', 'Cargo']]
+                dia_sel = st.selectbox("Seleccione día para análisis de roles y turnos:", dias_cols)
 
-                # --- CONTROL DE DESCANSOS SEMANALES ---
-                st.divider()
-                st.subheader("🏖️ Control de Descansos por Grupo (Semanal)")
-                descansos_grupo = df_view.groupby('Grupo')[cols_dias].apply(lambda x: (x == 'D').sum().sum())
-                st.bar_chart(descansos_grupo)
+                # Tabla cruzada: Cargo vs Turno (Muestra cuántos Masters/Tec en T1, T2, etc)
+                df_res_dia = df_f.groupby(['Cargo', dia_sel]).size().unstack(fill_value=0)
                 
+                col_r1, col_r2 = st.columns([2, 1])
+                with col_r1:
+                    st.markdown(f"**Distribución de Personal el día {dia_sel}**")
+                    st.table(df_res_dia)
+                
+                with col_r2:
+                    st.markdown("**Totales Operativos**")
+                    conteo = df_f[dia_sel].value_counts()
+                    st.metric("Personal en Turno", conteo.get('T1',0)+conteo.get('T2',0)+conteo.get('T3',0))
+                    st.metric("En Descanso (D)", conteo.get('D', 0))
+                    st.metric("Disponibles (X)", conteo.get('X', 0))
+
+                # --- DESCANSOS POR GRUPO ---
+                st.subheader("🏖️ Total Descansos por Grupo (En el período)")
+                df_desc = df_f.set_index('Grupo')[dias_cols]
+                total_d = (df_desc == 'D').sum(axis=1).groupby(level=0).sum()
+                st.bar_chart(total_d)
+
                 if st.button("💾 GUARDAR DEFINITIVAMENTE EN GITHUB", use_container_width=True):
-                    # (Tu lógica de guardado actual...)
-                    pass
+                    malla_json = st.session_state['temp_malla'].to_json(orient='split')
+                    nueva = pd.DataFrame([{
+                        "Mes": f_i.strftime("%B"), "Año": f_i.year,
+                        "Rango": f"{f_i} a {f_f}", "Fecha_Crea": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                        "Datos_JSON": malla_json, "Horarios": str(h)
+                    }])
+                    df_h = read_db("historico_mallas")
+                    if df_h is None: df_h = pd.DataFrame(columns=["Mes", "Año", "Rango", "Fecha_Crea", "Datos_JSON", "Horarios"])
+                    if save_db(pd.concat([df_h, nueva], ignore_index=True), "historico_mallas"):
+                        st.success("✅ Sincronizado en GitHub.")
             else:
-                st.warning("⚠️ No hay malla generada para mostrar.")
+                st.warning("⚠️ Genere la malla en la pestaña de parámetros.")
+
         with tab3:
-            st.subheader("📜 Mallas Guardadas")
+            st.subheader("📜 Histórico de Versiones")
             df_hist = read_db("historico_mallas")
             if df_hist is not None and not df_hist.empty:
                 for i, row in df_hist.iterrows():
-                    # USAMOS .get() PARA EVITAR EL KEYERROR SI LA COLUMNA NO EXISTE
-                    mes_label = row.get('Mes', 'N/A')
-                    anio_label = row.get('Año', 'N/A')
-                    rango_label = row.get('Rango', 'Sin Rango')
-                    fecha_label = row.get('Fecha_Crea', row.get('Fecha', 'Fecha Desconocida'))
-                    
-                    with st.expander(f"📅 {mes_label} {anio_label} - ({rango_label})"):
-                        st.write(f"Guardado el: {fecha_label}")
-                        if st.button("Recuperar esta versión", key=f"rec_{i}"):
+                    m_label = row.get('Mes', 'N/A')
+                    r_label = row.get('Rango', 'Sin Rango')
+                    with st.expander(f"📅 Malla {m_label} - ({r_label})"):
+                        if st.button("Cargar esta versión", key=f"rec_{i}"):
                             st.session_state['temp_malla'] = pd.read_json(io.StringIO(row['Datos_JSON']), orient='split')
                             st.rerun()
             else:
-                st.info("Historial vacío.")
+                st.info("No hay mallas guardadas.")
 
-    # --- MODULOS RESTANTES (Mantener igual) ---
+    # --- MODULO: BASE DE DATOS ---
     elif st.session_state['menu_actual'] == "👥 Base de Datos":
         st.header("👥 Gestión de Técnicos")
         st.dataframe(df_raw, use_container_width=True)
         with st.form("new_tec"):
+            st.subheader("Añadir Técnico")
             n = st.text_input("Nombre")
             c = st.selectbox("Cargo", ["MASTER", "TECNICO A", "TECNICO B"])
             if st.form_submit_button("Guardar"):
@@ -199,7 +199,7 @@ def run_app():
                     st.rerun()
     else:
         st.title("🚀 MovilGo Admin")
-        st.write(f"Técnicos: {len(df_raw)}")
+        st.write(f"Técnicos activos: {len(df_raw)}")
 
 if __name__ == "__main__":
     run_app()
