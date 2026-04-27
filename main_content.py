@@ -212,5 +212,23 @@ def run_app():
         if st.button("⬅️ VOLVER AL INICIO"):
             st.session_state['menu_actual'] = "🏠 Inicio"; st.rerun()
 
+
+elif st.session_state['menu_actual'] == "⚙️ Usuarios":
+        st.header("⚙️ Usuarios del Sistema")
+        st.table(df_users[["Nombre", "Correo", "Rol"]])
+        
+        st.divider()
+        st.subheader("📦 Respaldo de Base de Datos")
+        if os.path.exists("movilgo_data.db"):
+            with open("movilgo_data.db", "rb") as f:
+                st.download_button(
+                    label="📥 Descargar movilgo_data.db",
+                    data=f,
+                    file_name="movilgo_data.db",
+                    mime="application/octet-stream"
+                )
+        else:
+            st.error("Archivo de base de datos no encontrado en el servidor.")
+
 if __name__ == "__main__":
     run_app()
