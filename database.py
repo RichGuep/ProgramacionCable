@@ -3,7 +3,7 @@ import pandas as pd
 from sqlalchemy import create_engine
 import os
 from git import Repo
-from logic import load_base # Importante para la inicialización
+from logic import load_base 
 
 DB_NAME = "movilgo_data.db"
 engine = create_engine(f"sqlite:///{DB_NAME}")
@@ -14,16 +14,13 @@ def commit_to_github():
         user = st.secrets["GITHUB_USER"]
         repo_name = st.secrets["GITHUB_REPO"]
         remote_url = f"https://{user}:{token}@github.com/{user}/{repo_name}.git"
-        
         repo = Repo(".")
         with repo.config_writer() as cw:
             cw.set_value("user", "name", "Streamlit App")
             cw.set_value("user", "email", "admin@movilgo.com")
-
         if os.path.exists(DB_NAME):
             repo.git.add(DB_NAME)
-            repo.index.commit("Actualización DB [Auto]")
-            # Intentamos empujar a main
+            repo.index.commit("Update DB")
             origin = repo.remotes.origin if 'origin' in repo.remotes else repo.create_remote('origin', remote_url)
             origin.push('main')
         return True
@@ -49,7 +46,7 @@ def read_db(table_name):
 def save_db(df, table_name):
     try:
         df.to_sql(table_name, engine, if_exists='replace', index=False)
-        commit_to_github() # Activa la persistencia
+        # commit_to_github() # Mantenlo comentado con # hasta que la app abra
         return True
     except Exception as e:
         st.error(f"Error SQLite: {e}")
