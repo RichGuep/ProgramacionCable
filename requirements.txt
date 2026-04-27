@@ -1,8 +1,6 @@
 streamlit
 pandas
+sqlalchemy
+GitPython
 pulp
 openpyxl
-xlsxwriter
-sqlalchemy
-pymysql
-cryptography
