@@ -107,24 +107,33 @@ def run_app():
 
         with tab2:
             if 'temp_malla' in st.session_state:
+                st.subheader("⚡ Vista Previa de la Malla")
                 st.dataframe(st.session_state['temp_malla'].style.map(estilo_malla), use_container_width=True)
-                if st.button("💾 GUARDAR ESTA VERSIÓN"):
-                    nueva_malla = pd.DataFrame([{
+                
+                # BOTÓN PARA GUARDAR LA MALLA EN EL HISTÓRICO
+                if st.button("💾 GUARDAR ESTA VERSIÓN EN EL HISTÓRICO"):
+                    # 1. Convertir la malla (DataFrame) a un formato de texto (JSON)
+                    malla_json = st.session_state['temp_malla'].to_json(orient='split')
+                    
+                    # 2. Crear el registro para la base de datos
+                    nueva_fila = pd.DataFrame([{
                         "Mes": f_mes.strftime("%B"),
                         "Año": f_mes.year,
                         "Fecha": datetime.now().strftime("%Y-%m-%d %H:%M"),
-                        "Datos_JSON": st.session_state['temp_malla'].to_json(orient='split')
+                        "Datos_JSON": malla_json
                     }])
-                    if save_db(pd.concat([df_hist, nueva_malla], ignore_index=True), "historico_mallas"):
-                        st.success("Guardado en SQLite")
+                    
+                    # 3. Leer el histórico actual, sumar la nueva y guardar
+                    df_hist_actual = read_db("historico_mallas")
+                    if df_hist_actual is None:
+                        df_hist_actual = pd.DataFrame(columns=["Mes", "Año", "Fecha", "Datos_JSON"])
+                    
+                    df_final = pd.concat([df_hist_actual, nueva_fila], ignore_index=True)
+                    
+                    if save_db(df_final, "historico_mallas"):
+                        st.success("✅ Malla guardada en el histórico y sincronizada con GitHub.")
             else:
-                st.info("Genere una malla en la pestaña anterior.")
-
-        with tab3:
-            if not df_hist.empty:
-                st.dataframe(df_hist[["Mes", "Año", "Fecha"]], use_container_width=True)
-            else:
-                st.write("No hay mallas guardadas.")
+                st.info("Primero genera una malla en la pestaña 'Configuración'.")
 
     # --- VISTA: BASE DE DATOS ---
     elif st.session_state['menu_actual'] == "👥 Base de Datos":
