@@ -203,17 +203,53 @@ def run_app():
                 st.info("No hay datos generados.")
 
     # --- OTRAS VISTAS ---
+  # --- VISTA: BASE DE DATOS (GESTIÓN DE PERSONAL) ---
     elif st.session_state['menu_actual'] == "👥 Base de Datos":
-        st.header("👥 Personal Operativo")
-        if df_raw is not None: st.dataframe(df_raw, use_container_width=True)
-        if st.button("Volver al Inicio"):
-            st.session_state['menu_actual'] = "🏠 Inicio"
-            st.rerun()
+        st.header("👥 Gestión de Personal Operativo")
+        
+        # 1. Formulario para Nuevo Ingreso
+        with st.expander("➕ REGISTRAR NUEVO PERSONAL", expanded=False):
+            with st.form("form_nuevo_personal"):
+                c1, c2, c3 = st.columns(3)
+                nuevo_nombre = c1.text_input("Nombre Completo")
+                nuevo_cargo = c2.selectbox("Cargo", ["MASTER", "TECNICO A", "TECNICO B", "AUXILIAR"])
+                nuevo_grupo = c3.text_input("Asignar Grupo (Opcional)", "Sin Grupo")
+                
+                if st.form_submit_button("GUARDAR EN BASE DE DATOS", use_container_width=True):
+                    if nuevo_nombre:
+                        # Crear nueva fila
+                        nueva_data = pd.DataFrame([{
+                            "Empleado": nuevo_nombre.upper(),
+                            "Cargo": nuevo_cargo,
+                            "Grupo": nuevo_grupo.upper()
+                        }])
+                        
+                        # Concatenar con la base actual
+                        df_actualizado = pd.concat([df_raw, nueva_data], ignore_index=True)
+                        
+                        # Guardar en GitHub
+                        if guardar_excel_en_github(df_actualizado, "base_personal.xlsx"):
+                            st.success(f"✅ {nuevo_nombre} ha sido registrado exitosamente.")
+                            st.rerun() # Refrescar para mostrar el cambio en la tabla
+                    else:
+                        st.error("El nombre es obligatorio.")
 
-    elif st.session_state['menu_actual'] == "⚙️ Usuarios":
-        st.header("⚙️ Gestión de Usuarios")
-        st.table(df_users[["Nombre", "Correo", "Rol"]])
-        if st.button("Volver al Inicio"):
+        st.divider()
+
+        # 2. Visualización y Edición
+        st.subheader("📋 Listado de Personal Activo")
+        if df_raw is not None:
+            # Añadimos un buscador rápido
+            busqueda = st.text_input("🔍 Buscar empleado por nombre...", "")
+            df_mostrar = df_raw[df_raw['Empleado'].str.contains(busqueda.upper(), na=False)] if busqueda else df_raw
+            
+            st.dataframe(df_mostrar, use_container_width=True, height=400)
+            
+            # Estadísticas rápidas
+            st.caption(f"Total personal activo: {len(df_raw)} | Filtro: {len(df_mostrar)}")
+        
+        st.divider()
+        if st.button("⬅️ VOLVER AL INICIO"):
             st.session_state['menu_actual'] = "🏠 Inicio"
             st.rerun()
 
