@@ -111,7 +111,7 @@ def run_app():
         with tab2:
             if 'temp_malla' in st.session_state and 'fecha_malla_ref' in st.session_state:
                 st.subheader(f"Malla Sugerida: {st.session_state['fecha_malla_ref'].strftime('%B %Y')}")
-                st.dataframe(st.session_state['temp_malla'].style.applymap(estilo_malla), use_container_width=True)
+                st.dataframe(st.session_state['temp_malla'].style.map(estilo_malla), use_container_width=True)
                 
                 if st.button("💾 CONFIRMAR Y GUARDAR EN GITHUB", use_container_width=True):
                     malla_json = st.session_state['temp_malla'].to_json(orient='split')
