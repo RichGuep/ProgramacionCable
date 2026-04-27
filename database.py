@@ -23,13 +23,22 @@ def commit_to_github():
 
 def read_db(table_name):
     try:
-        df = pd.read_sql(f"SELECT * FROM {table_name}", engine)
-        if df.empty:
-            st.warning(f"La tabla {table_name} está vacía.")
-        return df
+        # Intentamos leer la tabla
+        return pd.read_sql(f"SELECT * FROM {table_name}", engine)
     except Exception as e:
-        # Esto nos dirá si la tabla ni siquiera ha sido creada
-        st.error(f"Error al leer {table_name}: {e}")
+        # Si el error es que la tabla no existe ("no such table")
+        if "no such table" in str(e).lower():
+            if table_name == "empleados":
+                st.info("📦 Inicializando base de datos de empleados desde Excel...")
+                df_inicial = load_base() # Carga tu empleados.xlsx
+                save_db(df_inicial, "empleados")
+                return df_inicial
+            elif table_name == "usuarios":
+                # Creamos el usuario admin por defecto
+                df_admin = pd.DataFrame([{"Nombre": "Richard", "Correo": "richard.guevara@greenmovil.com.co", "Rol": "Admin", "Password": "Admin2026"}])
+                save_db(df_admin, "usuarios")
+                return df_admin
+        # Si es otro error, lo mostramos
         return None
 
 def save_db(df, table_name):
