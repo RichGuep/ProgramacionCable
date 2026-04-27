@@ -7,7 +7,8 @@ from datetime import datetime
 
 # Importamos las funciones de nuestros otros archivos
 from logic import load_base, generar_malla_tecnica_pulp, generar_malla_auxiliares_pool, reconstruir_malla_desde_json
-from styles import estilo_malla, estilo_ax
+from styles import estilo_malla, estilo_ax, get_login_styles
+
 from github_utils import guardar_excel_en_github, leer_excel_de_github
 
 def run_app():
@@ -27,17 +28,21 @@ def run_app():
 
     # --- LÓGICA DE LOGIN ---
     if not st.session_state['auth']:
+        # Aplicamos los estilos de login desde styles.py
+        st.markdown(get_login_styles(), unsafe_allow_html=True)
+        
         _, col_login, _ = st.columns([1, 2, 1])
         with col_login:
-            st.markdown('<div class="login-card">', unsafe_allow_html=True)
+            st.markdown('<div class="login-container">', unsafe_allow_html=True)
             if os.path.exists(LOGO_PATH): 
-                st.image(LOGO_PATH, width=1420)
-            st.markdown('<div class="brand-title">Sistema de planeacion de turnos personal operativo</div>', unsafe_allow_html=True)
+                st.image(LOGO_PATH)
+            st.markdown('<div class="brand-title">Sistema de Planeación de Turnos</div>', unsafe_allow_html=True)
+            st.markdown('</div>', unsafe_allow_html=True)
             
             with st.form("Login"):
                 u = st.text_input("Usuario Corporativo")
                 p = st.text_input("Contraseña", type="password")
-                if st.form_submit_button("INGRESAR AL PANEL"):
+                if st.form_submit_button("INGRESAR AL PANEL", use_container_width=True):
                     user_match = df_users[(df_users['Correo'] == u) & (df_users['Password'].astype(str) == p)]
                     if u == "richard.guevara@greenmovil.com.co" and p == "Admin2026":
                         st.session_state['auth'], st.session_state['rol'] = True, "Admin"
@@ -48,7 +53,6 @@ def run_app():
                         st.rerun()
                     else:
                         st.error("Credenciales incorrectas.")
-            st.markdown('</div>', unsafe_allow_html=True)
         return
 
     # --- PANEL PRINCIPAL ---
@@ -84,25 +88,43 @@ def run_app():
 
     # --- MÓDULO GESTIÓN DE MALLAS ---
     if menu == "📊 Gestión de Mallas":
-        # Cargamos el histórico con blindaje de columnas
         df_hist = leer_excel_de_github("historico_mallas.xlsx")
         if df_hist is None:
             df_hist = pd.DataFrame(columns=["Mes", "Año", "Tipo", "Alcance", "Fecha", "Datos_JSON"])
         else:
-            # Si el archivo existe pero no tiene la columna Alcance, la creamos
             if 'Alcance' not in df_hist.columns:
                 df_hist['Alcance'] = "Mes Completo"
 
-        tab1, tab2, tab3 = st.tabs(["⚡ Generador Técnicos", "⚡ Generador Auxiliares", "📜 Histórico"])
+        tab1, tab2, tab3 = st.tabs(["⚙️ Panel de Control", "⚡ Vista Previa", "📜 Histórico"])
 
         with tab1:
-            st.subheader(f"Configuración Planta Técnica ({alcance})")
+            st.header("🎮 Centro de Mando Operativo")
+            
+            # --- 1. PARAMETRIZACIÓN DE DOTACIÓN ---
+            st.subheader("1. Dotación de Personal")
             c_cfg = st.columns(3)
-            m_req = c_cfg[0].number_input("Masters", 1, 5, 2)
-            ta_req = c_cfg[1].number_input("Tec A", 1, 15, 7)
-            tb_req = c_cfg[2].number_input("Tec B", 1, 10, 3)
+            m_req = c_cfg[0].number_input("Masters Requeridos", 1, 5, 2)
+            ta_req = c_cfg[1].number_input("Técnicos A Requeridos", 1, 15, 7)
+            tb_req = c_cfg[2].number_input("Técnicos B Requeridos", 1, 10, 3)
 
-            with st.expander("📅 Parámetros de Grupos", expanded=True):
+            st.divider()
+
+            # --- 2. PARAMETRIZACIÓN DE HORARIOS ---
+            st.subheader("2. Horarios por Turno")
+            h1, h2, h3 = st.columns(3)
+            dict_horarios = {}
+            for i, t_label in enumerate(["T1", "T2", "T3"]):
+                with [h1, h2, h3][i]:
+                    st.markdown(f"**Turno {t_label}**")
+                    h_ini = st.text_input(f"Inicio {t_label}", value="06:00" if i==0 else "14:00" if i==1 else "22:00")
+                    h_fin = st.text_input(f"Fin {t_label}", value="14:00" if i==0 else "22:00" if i==1 else "06:00")
+                    dict_horarios[t_label] = {"inicio": h_ini, "fin": h_fin}
+
+            st.divider()
+
+            # --- 3. PARAMETRIZACIÓN DE GRUPOS ---
+            st.subheader("3. Grupos y Descansos")
+            with st.expander("Configurar Rotación y Disponibilidad", expanded=True):
                 n_map, d_map, t_map = {}, {}, {}
                 cols = st.columns(4)
                 for i in range(4):
@@ -110,11 +132,12 @@ def run_app():
                         g_id = f"G{i+1}"
                         n_s = st.text_input(f"Nombre {g_id}", f"GRUPO {i+1}", key=f"tec_n_{i}")
                         d_s = st.selectbox(f"Descanso", DIAS_SEMANA, index=i % 7, key=f"tec_d_{i}")
-                        es_disp = st.checkbox(f"Disponible", value=(i==3), key=f"tec_t_{i}")
+                        es_disp = st.checkbox(f"Disponibilidad", value=(i==3), key=f"tec_t_{i}")
                         n_map[g_id] = n_s; d_map[n_s] = d_s; t_map[n_s] = "DISP" if es_disp else "ROTA"
 
-            if st.button("⚡ GENERAR PROGRAMACIÓN TÉCNICA"):
-                # Buscar último estado guardado para empalme
+            st.divider()
+
+            if st.button("🚀 GENERAR PROGRAMACIÓN CON ESTOS PARÁMETROS", use_container_width=True):
                 estado_previo = None
                 if not df_hist.empty:
                     pasado = df_hist[(df_hist['Mes'] == mes_sel) & (df_hist['Año'] == ano_sel) & (df_hist['Tipo'] == "Técnica")]
@@ -124,26 +147,29 @@ def run_app():
                             cols_d = [c for c in m_ant.columns if '-' in str(c)]
                             ult_col = sorted(cols_d, key=lambda x: int(str(x).split('-')[0]))[-1]
                             estado_previo = m_ant.set_index('Grupo')[ult_col].to_dict()
-                            st.info(f"🔄 Empalme aplicado del registro guardado.")
+                            st.info(f"🔄 Continuidad aplicada desde el registro anterior.")
 
                 st.session_state['temp_malla_tec'] = generar_malla_tecnica_pulp(
                     df_raw, n_map, d_map, t_map, m_req, ta_req, tb_req, 
-                    ano_sel, mes_num, alcance=alcance, semana_inicio=semana_inicio, estado_anterior=estado_previo
+                    ano_sel, mes_num, horarios_dict=dict_horarios, 
+                    alcance=alcance, semana_inicio=semana_inicio, estado_anterior=estado_previo
                 )
+                st.success("✅ Malla generada. Vaya a la pestaña 'Vista Previa' para revisar y guardar.")
 
+        with tab2:
             if 'temp_malla_tec' in st.session_state:
+                st.subheader("⚡ Vista Previa de la Programación")
                 df_v = st.session_state['temp_malla_tec']
-                piv = df_v.pivot(index=['Grupo', 'Empleado', 'Cargo'], columns='Label', values='Final')
+                # Pivotamos incluyendo la nueva columna de Horario en el índice
+                piv = df_v.pivot(index=['Grupo', 'Empleado', 'Cargo', 'Horario'], columns='Label', values='Final')
                 st.dataframe(piv[sorted(piv.columns, key=lambda x: int(str(x).split('-')[0]))].style.map(estilo_malla), use_container_width=True)
                 
                 st.divider()
-                # ALERTA DE REEMPLAZO BLINDADA
                 existe = not df_hist[(df_hist['Mes'] == mes_sel) & (df_hist['Año'] == ano_sel) & (df_hist['Alcance'] == alcance)].empty
                 confirmar = st.checkbox(f"⚠️ Reemplazar {alcance} existente?") if existe else True
                 
-                if st.button("💾 GUARDAR EN HISTÓRICO"):
+                if st.button("💾 CONFIRMAR Y GUARDAR EN GITHUB"):
                     if confirmar:
-                        # Filtrar para eliminar el registro idéntico previo
                         df_hist = df_hist[~((df_hist['Mes'] == mes_sel) & (df_hist['Año'] == ano_sel) & (df_hist['Alcance'] == alcance))]
                         nueva_fila = pd.DataFrame([{
                             "Mes": mes_sel, "Año": ano_sel, "Tipo": "Técnica", "Alcance": alcance,
@@ -152,25 +178,10 @@ def run_app():
                         }])
                         df_hist_final = pd.concat([df_hist, nueva_fila], ignore_index=True)
                         if guardar_excel_en_github(df_hist_final, "historico_mallas.xlsx"):
-                            st.success(f"✅ {alcance} de {mes_sel} guardado exitosamente."); st.balloons()
-                    else: st.error("Debe marcar la confirmación de reemplazo.")
-
-        with tab2:
-            st.subheader("Configuración Auxiliares")
-            with st.expander("📅 Equipos Auxiliares", expanded=True):
-                aux_n_map, aux_d_map = {}, {}
-                cols_ax = st.columns(5)
-                for i in range(5):
-                    with cols_ax[i]:
-                        n_eq = st.text_input(f"Equipo {i+1}", f"EQ-{chr(65+i)}", key=f"ax_n_{i}")
-                        d_eq = st.selectbox(f"Descanso Aux {i+1}", DIAS_SEMANA, index=i, key=f"ax_d_{i}")
-                        aux_n_map[i] = n_eq; aux_d_map[n_eq] = d_eq
-
-            if st.button("⚡ GENERAR MALLA AUXILIARES"):
-                df_res_ax = generar_malla_auxiliares_pool(df_raw, aux_n_map, aux_d_map, ano_sel, mes_num)
-                if df_res_ax is not None:
-                    piv_ax = df_res_ax.pivot(index=['Equipo', 'Empleado'], columns='Label', values='Turno')
-                    st.dataframe(piv_ax[sorted(piv_ax.columns, key=lambda x: int(str(x).split('-')[0]))].style.map(estilo_ax), use_container_width=True)
+                            st.success(f"✅ Guardado en GitHub."); st.balloons()
+                    else: st.error("Debe confirmar el reemplazo.")
+            else:
+                st.info("No hay ninguna malla generada. Use el Panel de Control.")
 
         with tab3:
             st.subheader("Consultar Histórico")
@@ -178,7 +189,6 @@ def run_app():
             if df_h_view is not None and not df_h_view.empty:
                 df_h_view = df_h_view.sort_values(by="Fecha", ascending=False)
                 opciones = range(len(df_h_view))
-                
                 def fmt_safe(x): 
                     row = df_h_view.iloc[x]
                     alc = row.get('Alcance', 'Mes Completo')
@@ -198,12 +208,12 @@ def run_app():
                     st.success(f"Visualizando: {st.session_state['info_viz']}")
                     df_v = st.session_state['malla_viz']
                     try:
-                        if 'Grupo' in df_v.columns:
-                            piv_v = df_v.pivot(index=['Grupo', 'Empleado', 'Cargo'], columns='Label', values='Final')
-                            st.dataframe(piv_v[sorted(piv_v.columns, key=lambda x: int(str(x).split('-')[0]))].style.map(estilo_malla), use_container_width=True)
-                        else:
-                            piv_v = df_v.pivot(index=['Equipo', 'Empleado'], columns='Label', values='Turno')
-                            st.dataframe(piv_v[sorted(piv_v.columns, key=lambda x: int(str(x).split('-')[0]))].style.map(estilo_ax), use_container_width=True)
+                        # Detectamos si tiene la columna Horario para pivotar correctamente
+                        idx_cols = ['Grupo', 'Empleado', 'Cargo']
+                        if 'Horario' in df_v.columns: idx_cols.append('Horario')
+                        
+                        piv_v = df_v.pivot(index=idx_cols, columns='Label', values='Final')
+                        st.dataframe(piv_v[sorted(piv_v.columns, key=lambda x: int(str(x).split('-')[0]))].style.map(estilo_malla), use_container_width=True)
                     except Exception as e:
                         st.error(f"Error al organizar los datos: {e}")
                     
@@ -211,12 +221,13 @@ def run_app():
                         del st.session_state['malla_viz']; st.rerun()
             else: st.info("No hay historial.")
 
-    # --- OTROS MÓDULOS ---
+    # --- OTROS MÓDULOS (Inicio, Base de Datos, Usuarios) ---
     elif menu == "🏠 Inicio":
         st.markdown(f"""
             <div style="background: linear-gradient(135deg, #064e3b 0%, #10b981 100%); padding: 3rem; border-radius: 20px; color: white; text-align: center;">
-                <h1>Bienvenido Richard</h1>
-                <p>Sistema de Programación Green Móvil | Período: {mes_sel} {ano_sel}</p>
+                <h1>Panel de Gestión MovilGo</h1>
+                <p>Bienvenido Richard Guevara | Operación Green Móvil</p>
+                <p>Período Activo: {mes_sel} {ano_sel}</p>
             </div>
         """, unsafe_allow_html=True)
 
