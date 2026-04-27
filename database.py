@@ -3,15 +3,33 @@ import pandas as pd
 from sqlalchemy import create_engine
 import os
 from git import Repo
-# --- ESTA ES LA LÍNEA QUE FALTA ---
-from logic import load_base 
-# ----------------------------------
+from logic import load_base # Importante para la inicialización
 
-# Configuración
 DB_NAME = "movilgo_data.db"
 engine = create_engine(f"sqlite:///{DB_NAME}")
 
-# ... (resto del código de commit_to_github)
+def commit_to_github():
+    try:
+        token = st.secrets["GITHUB_TOKEN"]
+        user = st.secrets["GITHUB_USER"]
+        repo_name = st.secrets["GITHUB_REPO"]
+        remote_url = f"https://{user}:{token}@github.com/{user}/{repo_name}.git"
+        
+        repo = Repo(".")
+        with repo.config_writer() as cw:
+            cw.set_value("user", "name", "Streamlit App")
+            cw.set_value("user", "email", "admin@movilgo.com")
+
+        if os.path.exists(DB_NAME):
+            repo.git.add(DB_NAME)
+            repo.index.commit("Actualización DB [Auto]")
+            # Intentamos empujar a main
+            origin = repo.remotes.origin if 'origin' in repo.remotes else repo.create_remote('origin', remote_url)
+            origin.push('main')
+        return True
+    except Exception as e:
+        print(f"Error Git: {e}")
+        return False
 
 def read_db(table_name):
     try:
@@ -19,10 +37,9 @@ def read_db(table_name):
     except Exception as e:
         if "no such table" in str(e).lower():
             if table_name == "empleados":
-                # Ahora sí reconocerá load_base porque la importamos arriba
-                df_inicial = load_base() 
-                save_db(df_inicial, "empleados")
-                return df_inicial
+                df_ini = load_base()
+                save_db(df_ini, "empleados")
+                return df_ini
             elif table_name == "usuarios":
                 df_admin = pd.DataFrame([{"Nombre": "Richard", "Correo": "richard.guevara@greenmovil.com.co", "Rol": "Admin", "Password": "Admin2026"}])
                 save_db(df_admin, "usuarios")
@@ -32,8 +49,7 @@ def read_db(table_name):
 def save_db(df, table_name):
     try:
         df.to_sql(table_name, engine, if_exists='replace', index=False)
-        # Intentar persistir en GitHub después de guardar
-        # commit_to_github() # Descomenta esto cuando tengas los Secrets listos
+        commit_to_github() # Activa la persistencia
         return True
     except Exception as e:
         st.error(f"Error SQLite: {e}")
