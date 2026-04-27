@@ -123,31 +123,64 @@ def run_app():
         with tab2:
             if 'temp_malla_tec' in st.session_state:
                 df_v = st.session_state['temp_malla_tec']
-                st.subheader("🔍 Filtros y Visualización")
-                f1, f2, f3 = st.columns(3)
+                st.subheader("🔍 Filtros y Visualización Avanzada")
                 
-                dias_disp = sorted(df_v['Label'].unique(), key=lambda x: int(x.split('-')[0]))
-                dia_sel = f1.selectbox("📅 Día para Listado", dias_disp)
-                grupo_sel = f2.selectbox("👥 Filtrar Grupo", ["Todos"] + sorted(df_v['Grupo'].unique().tolist()))
-                modo_vista = f3.radio("🖼️ Formato", ["Listado por Día", "Malla General"], horizontal=True)
+                # --- NUEVA FILA DE FILTROS CON RANGO DE FECHAS ---
+                f_row1 = st.columns([2, 1, 1])
+                
+                # 1. Filtro de Rango de Fechas para el Listado
+                # Convertimos los labels (ej: "01-Mie") a fechas reales para el filtro
+                with f_row1[0]:
+                    st.markdown("**📅 Rango de Fechas para Listado:**")
+                    c_f1, c_f2 = st.columns(2)
+                    # Usamos las fechas que ya definiste en el sidebar como límites
+                    f_listado_ini = c_f1.date_input("Desde", value=f_inicio, key="f_list_ini")
+                    f_listado_fin = c_f2.date_input("Hasta", value=f_fin, key="f_list_fin")
+                
+                # 2. Filtro de Grupo
+                grupo_sel = f_row1[1].selectbox("👥 Filtrar por Grupo", ["Todos"] + sorted(df_v['Grupo'].unique().tolist()))
+                
+                # 3. Selector de Formato
+                modo_vista = f_row1[2].radio("🖼️ Formato de Vista", ["Listado Detallado", "Malla General"], horizontal=False)
 
-                if modo_vista == "Listado por Día":
-                    df_dia = df_v[df_v['Label'] == dia_sel].copy()
-                    if grupo_sel != "Todos": df_dia = df_dia[df_dia['Grupo'] == grupo_sel]
+                st.divider()
+
+                # --- LÓGICA DE VISUALIZACIÓN ---
+                
+                if modo_vista == "Listado Detallado":
+                    # Convertimos la columna 'Label' o creamos una columna 'Fecha_Real' para filtrar
+                    # En la lógica actual, 'Label' suele ser '01-Mie'. Vamos a reconstruir la fecha:
+                    df_v['Fecha_Filtro'] = df_v['Label'].apply(lambda x: datetime(f_inicio.year, f_inicio.month, int(x.split('-')[0])).date())
                     
-                    # Separar columnas de inicio y fin
-                    df_dia['Hr. Inicio'] = df_dia['Horario'].apply(lambda x: x.split('-')[0] if '-' in str(x) else "---")
-                    df_dia['Hr. Fin'] = df_dia['Horario'].apply(lambda x: x.split('-')[1] if '-' in str(x) else "---")
+                    # Aplicamos filtros de fecha y grupo
+                    mask = (df_v['Fecha_Filtro'] >= f_listado_ini) & (df_v['Fecha_Filtro'] <= f_listado_fin)
+                    df_res = df_v[mask].copy()
                     
-                    st.dataframe(df_dia[['Grupo', 'Empleado', 'Cargo', 'Final', 'Hr. Inicio', 'Hr. Fin']], use_container_width=True)
+                    if grupo_sel != "Todos":
+                        df_res = df_res[df_res['Grupo'] == grupo_sel]
+                    
+                    # Formateamos columnas de horario (image_a0bfa0.png)
+                    df_res['Hr. Inicio'] = df_res['Horario'].apply(lambda x: x.split('-')[0] if '-' in str(x) else "---")
+                    df_res['Hr. Fin'] = df_res['Horario'].apply(lambda x: x.split('-')[1] if '-' in str(x) else "---")
+                    
+                    # Renombramos para que se vea profesional
+                    df_res = df_res.rename(columns={'Fecha_Filtro': 'Fecha'})
+                    
+                    cols_finales = ['Fecha', 'Grupo', 'Empleado', 'Cargo', 'Final', 'Hr. Inicio', 'Hr. Fin']
+                    st.markdown(f"### 📋 Listado de Programación")
+                    st.dataframe(df_res[cols_finales].sort_values(['Fecha', 'Hr. Inicio']), use_container_width=True, height=500)
 
                 elif modo_vista == "Malla General":
                     df_m = df_v.copy()
-                    if grupo_sel != "Todos": df_m = df_m[df_m['Grupo'] == grupo_sel]
+                    if grupo_sel != "Todos":
+                        df_m = df_m[df_m['Grupo'] == grupo_sel]
+                    
                     piv = df_m.pivot(index=['Grupo', 'Empleado', 'Cargo'], columns='Label', values='Final')
                     st.dataframe(piv.style.map(estilo_malla), use_container_width=True)
 
-                if st.button("💾 GUARDAR EN GITHUB"):
+                # --- BOTÓN DE GUARDADO ---
+                st.divider()
+                if st.button("💾 GUARDAR VERSIÓN EN GITHUB", use_container_width=True):
                     nueva_fila = pd.DataFrame([{
                         "Mes": mes_ref, "Año": ano_ref, "Tipo": "Técnica",
                         "Fecha": datetime.now().strftime("%d/%m/%Y %H:%M"),
@@ -155,9 +188,9 @@ def run_app():
                     }])
                     df_hist = pd.concat([df_hist, nueva_fila], ignore_index=True)
                     if guardar_excel_en_github(df_hist, "historico_mallas.xlsx"):
-                        st.success("✅ Guardado")
+                        st.success("✅ Malla guardada exitosamente en el historial.")
             else:
-                st.info("Genere una malla primero.")
+                st.info("⚠️ No hay datos generados. Por favor, ve a la pestaña 'Parametrización' y presiona 'Generar'.")
 
         with tab3:
             st.subheader("Historial")
