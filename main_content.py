@@ -135,6 +135,23 @@ def run_app():
             else:
                 st.info("Primero genera una malla en la pestaña 'Configuración'.")
 
+    with tab3:
+            st.subheader("📜 Historial de Mallas Guardadas")
+            df_hist = read_db("historico_mallas")
+            
+            if df_hist is not None and not df_hist.empty:
+                st.write("Seleccione una versión para reconstruir la tabla:")
+                for i, row in df_hist.iterrows():
+                    col1, col2 = st.columns([3, 1])
+                    col1.write(f"📅 {row['Mes']} {row['Año']} (Creada: {row['Fecha']})")
+                    if col2.button("Ver Malla", key=f"ver_{i}"):
+                        # Reconstruir el DataFrame desde el JSON
+                        df_recuperado = pd.read_json(io.StringIO(row['Datos_JSON']), orient='split')
+                        st.session_state['temp_malla'] = df_recuperado
+                        st.rerun()
+            else:
+                st.info("No hay mallas en el histórico.")
+
     # --- VISTA: BASE DE DATOS ---
     elif st.session_state['menu_actual'] == "👥 Base de Datos":
         st.header("👥 Gestión de Personal")
