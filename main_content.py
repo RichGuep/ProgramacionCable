@@ -19,7 +19,7 @@ def run_app():
     if 'rol' not in st.session_state:
         st.session_state['rol'] = None
 
-    # 2. Cargar Base de Usuarios
+    # 2. Cargar Base de Usuarios de forma segura
     df_users = leer_excel_de_github("usuarios.xlsx")
     if df_users is None:
         df_users = pd.DataFrame(columns=["Nombre", "Correo", "Rol", "Password"])
@@ -61,11 +61,10 @@ def run_app():
         st.divider()
         st.subheader("📅 Periodo de Programación")
         
-        # Selección por fechas reales (Sustituye Mes/Año)
+        # Selección por fechas reales
         f_inicio = st.date_input("Fecha Inicio", datetime(2026, 4, 1))
         f_fin = st.date_input("Fecha Fin", datetime(2026, 4, 30))
         
-        # Mantenemos compatibilidad con el histórico guardando el mes predominante
         mes_ref = f_inicio.strftime("%B")
         ano_ref = f_inicio.year
 
@@ -78,21 +77,22 @@ def run_app():
 
     # --- GESTIÓN DE MALLAS ---
     if menu == "📊 Gestión de Mallas":
-        df_hist = leer_excel_de_github("historico_mallas.xlsx") or pd.DataFrame(columns=["Mes", "Año", "Tipo", "Fecha", "Datos_JSON"])
+        # CARGA SEGURA DEL HISTÓRICO (Aquí estaba el error)
+        df_hist = leer_excel_de_github("historico_mallas.xlsx")
+        if df_hist is None:
+            df_hist = pd.DataFrame(columns=["Mes", "Año", "Tipo", "Fecha", "Datos_JSON"])
 
-        tab1, tab2, tab3 = st.tabs(["⚙️ Panel de Parametrización", "⚡ Vista Previa y Filtros", "📜 Histórico"])
+        tab1, tab2, tab3 = st.tabs(["⚙️ Parametrización", "⚡ Vista Previa y Filtros", "📜 Histórico"])
 
         with tab1:
             st.header("🎮 Centro de Mando Operativo")
             
-            # 1. Dotación
             st.subheader("1. Dotación Requerida")
             c_dot = st.columns(3)
             m_req = c_dot[0].number_input("Masters", 1, 5, 2)
             ta_req = c_dot[1].number_input("Tec A", 1, 15, 7)
             tb_req = c_dot[2].number_input("Tec B", 1, 10, 3)
 
-            # 2. Horarios Dinámicos
             st.subheader("2. Parametrización de Horarios")
             h1, h2, h3 = st.columns(3)
             dict_horarios = {}
@@ -103,7 +103,6 @@ def run_app():
                     fin = st.text_input(f"Fin {t_label}", "14:00" if i==0 else "22:00" if i==1 else "06:00", key=f"hf_{i}")
                     dict_horarios[t_label] = {"inicio": ini, "fin": fin}
 
-            # 3. Grupos y Descansos
             st.subheader("3. Configuración de Grupos")
             n_map, d_map, t_map = {}, {}, {}
             cols_g = st.columns(4)
@@ -115,61 +114,40 @@ def run_app():
                     n_map[f"G{i+1}"] = n_s; d_map[n_s] = d_s; t_map[n_s] = "DISP" if es_disp else "ROTA"
 
             if st.button("🚀 GENERAR PROGRAMACIÓN TÉCNICA", use_container_width=True):
-                # Lógica de empalme simplificada para el rango de fechas
                 st.session_state['temp_malla_tec'] = generar_malla_tecnica_pulp(
                     df_raw, n_map, d_map, t_map, m_req, ta_req, tb_req, 
                     f_inicio.year, f_inicio.month, dict_horarios
                 )
-                st.success("✅ Malla generada. Revise la pestaña 'Vista Previa'")
+                st.success("✅ Malla generada.")
 
         with tab2:
             if 'temp_malla_tec' in st.session_state:
                 df_v = st.session_state['temp_malla_tec']
-                
-                # --- SISTEMA DE FILTROS AVANZADOS ---
                 st.subheader("🔍 Filtros y Visualización")
                 f1, f2, f3 = st.columns(3)
                 
                 dias_disp = sorted(df_v['Label'].unique(), key=lambda x: int(x.split('-')[0]))
-                dia_sel = f1.selectbox("📅 Seleccionar Día (Para Listado)", dias_disp)
-                
-                grupos_disp = ["Todos"] + sorted(df_v['Grupo'].unique().tolist())
-                grupo_sel = f2.selectbox("👥 Filtrar por Grupo", grupos_disp)
-                
-                modo_vista = f3.radio("🖼️ Formato de Vista", ["Listado por Día", "Malla General", "Conteo"], horizontal=False)
+                dia_sel = f1.selectbox("📅 Día para Listado", dias_disp)
+                grupo_sel = f2.selectbox("👥 Filtrar Grupo", ["Todos"] + sorted(df_v['Grupo'].unique().tolist()))
+                modo_vista = f3.radio("🖼️ Formato", ["Listado por Día", "Malla General"], horizontal=True)
 
-                st.divider()
-
-                # --- MODO 1: LISTADO DIARIO DETALLADO (Requerimiento image_a0bfa0.png) ---
                 if modo_vista == "Listado por Día":
-                    st.markdown(f"### 📋 Personal Programado: {dia_sel}")
                     df_dia = df_v[df_v['Label'] == dia_sel].copy()
-                    if grupo_sel != "Todos":
-                        df_dia = df_dia[df_dia['Grupo'] == grupo_sel]
+                    if grupo_sel != "Todos": df_dia = df_dia[df_dia['Grupo'] == grupo_sel]
                     
-                    # Separar columnas de inicio y fin para mayor claridad
+                    # Separar columnas de inicio y fin
                     df_dia['Hr. Inicio'] = df_dia['Horario'].apply(lambda x: x.split('-')[0] if '-' in str(x) else "---")
                     df_dia['Hr. Fin'] = df_dia['Horario'].apply(lambda x: x.split('-')[1] if '-' in str(x) else "---")
                     
-                    cols_show = ['Grupo', 'Empleado', 'Cargo', 'Final', 'Hr. Inicio', 'Hr. Fin']
-                    st.dataframe(df_dia[cols_show].sort_values('Hr. Inicio'), use_container_width=True, height=450)
+                    st.dataframe(df_dia[['Grupo', 'Empleado', 'Cargo', 'Final', 'Hr. Inicio', 'Hr. Fin']], use_container_width=True)
 
-                # --- MODO 2: MALLA GENERAL (Vista image_6ba49b.png) ---
                 elif modo_vista == "Malla General":
-                    df_malla = df_v.copy()
-                    if grupo_sel != "Todos":
-                        df_malla = df_malla[df_malla['Grupo'] == grupo_sel]
-                    
-                    piv = df_malla.pivot(index=['Grupo', 'Empleado', 'Cargo'], columns='Label', values='Final')
+                    df_m = df_v.copy()
+                    if grupo_sel != "Todos": df_m = df_m[df_m['Grupo'] == grupo_sel]
+                    piv = df_m.pivot(index=['Grupo', 'Empleado', 'Cargo'], columns='Label', values='Final')
                     st.dataframe(piv.style.map(estilo_malla), use_container_width=True)
 
-                # --- MODO 3: CONTEO ---
-                else:
-                    resumen = df_v.groupby(['Label', 'Final']).size().unstack(fill_value=0)
-                    st.dataframe(resumen.T, use_container_width=True)
-
-                if st.button("💾 GUARDAR ESTA VERSIÓN EN GITHUB", use_container_width=True):
-                    # Guardamos usando el mes de referencia de la fecha de inicio
+                if st.button("💾 GUARDAR EN GITHUB"):
                     nueva_fila = pd.DataFrame([{
                         "Mes": mes_ref, "Año": ano_ref, "Tipo": "Técnica",
                         "Fecha": datetime.now().strftime("%d/%m/%Y %H:%M"),
@@ -177,23 +155,26 @@ def run_app():
                     }])
                     df_hist = pd.concat([df_hist, nueva_fila], ignore_index=True)
                     if guardar_excel_en_github(df_hist, "historico_mallas.xlsx"):
-                        st.success("✅ Guardado exitoso")
+                        st.success("✅ Guardado")
             else:
-                st.info("Genere una malla en la pestaña anterior para visualizar filtros.")
+                st.info("Genere una malla primero.")
 
         with tab3:
-            st.subheader("Historial de Versiones")
-            # ... Lógica de histórico igual a la anterior ...
+            st.subheader("Historial")
+            if not df_hist.empty:
+                sel = st.selectbox("Versiones", range(len(df_hist)), format_func=lambda x: f"{df_hist.iloc[x]['Mes']} ({df_hist.iloc[x]['Fecha']})")
+                if st.button("Cargar"):
+                    m_rec = reconstruir_malla_desde_json(df_hist.iloc[sel]['Datos_JSON'])
+                    if m_rec is not None:
+                        st.session_state['malla_viz'] = m_rec
+            else: st.info("No hay historial.")
 
-    # --- BASE DE DATOS ---
+    # --- BASE DE DATOS Y USUARIOS ---
     elif menu == "👥 Base de Datos":
-        st.header("Personal Registrado")
-        if df_raw is not None:
-            st.dataframe(df_raw, use_container_width=True)
-
-    # --- USUARIOS ---
+        st.header("Personal")
+        if df_raw is not None: st.dataframe(df_raw, use_container_width=True)
     elif menu == "⚙️ Usuarios":
-        st.header("Control de Acceso")
+        st.header("Usuarios")
         st.table(df_users[["Nombre", "Correo", "Rol"]])
 
 if __name__ == "__main__":
