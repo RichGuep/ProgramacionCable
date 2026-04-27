@@ -35,7 +35,6 @@ def run_app():
                 u = st.text_input("Usuario")
                 p = st.text_input("Contraseña", type="password")
                 if st.form_submit_button("INGRESAR", use_container_width=True):
-                    # Login simple para Richard
                     if u == "richard.guevara@greenmovil.com.co" and p == "Admin2026":
                         st.session_state['auth'] = True
                         st.rerun()
@@ -103,18 +102,12 @@ def run_app():
                 f_i, f_f = st.session_state['rango_ref']
                 h = st.session_state.get('horarios', {})
                 st.subheader(f"📋 Malla: {f_i.strftime('%d/%m')} al {f_f.strftime('%d/%m')}")
-                
-                # Visualización de la Malla Principal
                 st.dataframe(st.session_state['temp_malla'].style.map(estilo_malla), use_container_width=True)
                 
-                # --- CORRECCIÓN DEL RESUMEN (Evita el KeyError) ---
                 st.divider()
                 st.subheader("📊 Resumen Ejecutivo (Conteo Diario)")
-                
                 m_resumen = st.session_state['temp_malla']
                 resumen_list = []
-                
-                # Iteramos sobre las columnas (fechas) de la malla directamente
                 for col in m_resumen.columns:
                     counts = m_resumen[col].value_counts()
                     resumen_list.append({
@@ -123,19 +116,23 @@ def run_app():
                         "Descanso (D)": counts.get("D", 0),
                         "Disponible (X)": counts.get("X", 0)
                     })
-                
                 df_res_final = pd.DataFrame(resumen_list).set_index("Fecha")
                 st.table(df_res_final.T)
                 
                 if st.button("💾 GUARDAR DEFINITIVAMENTE EN GITHUB", use_container_width=True):
                     malla_json = st.session_state['temp_malla'].to_json(orient='split')
                     nueva = pd.DataFrame([{
-                        "Mes": f_i.strftime("%B"), "Año": f_i.year,
-                        "Rango": f"{f_i} a {f_f}", "Fecha_Crea": datetime.now().strftime("%Y-%m-%d %H:%M"),
-                        "Datos_JSON": malla_json, "Horarios": str(h)
+                        "Mes": f_i.strftime("%B"), 
+                        "Año": f_i.year,
+                        "Rango": f"{f_i} a {f_f}", 
+                        "Fecha_Crea": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                        "Datos_JSON": malla_json, 
+                        "Horarios": str(h)
                     }])
                     df_h = read_db("historico_mallas")
-                    if df_h is None: df_h = pd.DataFrame(columns=["Mes", "Año", "Rango", "Fecha_Crea", "Datos_JSON", "Horarios"])
+                    if df_h is None: 
+                        df_h = pd.DataFrame(columns=["Mes", "Año", "Rango", "Fecha_Crea", "Datos_JSON", "Horarios"])
+                    
                     if save_db(pd.concat([df_h, nueva], ignore_index=True), "historico_mallas"):
                         st.success("✅ Sincronizado en GitHub.")
             else:
@@ -146,14 +143,21 @@ def run_app():
             df_hist = read_db("historico_mallas")
             if df_hist is not None and not df_hist.empty:
                 for i, row in df_hist.iterrows():
-                    with st.expander(f"Malla {row['Mes']} {row['Año']} - ({row['Rango']})"):
-                        if st.button("Cargar versión", key=f"rec_{i}"):
+                    # USAMOS .get() PARA EVITAR EL KEYERROR SI LA COLUMNA NO EXISTE
+                    mes_label = row.get('Mes', 'N/A')
+                    anio_label = row.get('Año', 'N/A')
+                    rango_label = row.get('Rango', 'Sin Rango')
+                    fecha_label = row.get('Fecha_Crea', row.get('Fecha', 'Fecha Desconocida'))
+                    
+                    with st.expander(f"📅 {mes_label} {anio_label} - ({rango_label})"):
+                        st.write(f"Guardado el: {fecha_label}")
+                        if st.button("Recuperar esta versión", key=f"rec_{i}"):
                             st.session_state['temp_malla'] = pd.read_json(io.StringIO(row['Datos_JSON']), orient='split')
                             st.rerun()
             else:
                 st.info("Historial vacío.")
 
-    # --- MODULO: BASE DE DATOS ---
+    # --- MODULOS RESTANTES (Mantener igual) ---
     elif st.session_state['menu_actual'] == "👥 Base de Datos":
         st.header("👥 Gestión de Técnicos")
         st.dataframe(df_raw, use_container_width=True)
@@ -165,8 +169,6 @@ def run_app():
                     nuevo = pd.concat([df_raw, pd.DataFrame([{"nombre": n.upper(), "cargo": c, "grupo": "SIN GRUPO"}])], ignore_index=True)
                     save_db(nuevo, "empleados")
                     st.rerun()
-
-    # --- MODULO: INICIO ---
     else:
         st.title("🚀 MovilGo Admin")
         st.write(f"Técnicos: {len(df_raw)}")
