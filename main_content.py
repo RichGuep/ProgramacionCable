@@ -158,30 +158,77 @@ def run_app():
 
         with tab2:
             if 'temp_malla_tec' in st.session_state:
-                st.subheader("⚡ Vista Previa de la Programación")
+                st.subheader("⚡ Tablero de Control y Vista Previa")
                 df_v = st.session_state['temp_malla_tec']
-                # Pivotamos incluyendo la nueva columna de Horario en el índice
-                piv = df_v.pivot(index=['Grupo', 'Empleado', 'Cargo', 'Horario'], columns='Label', values='Final')
-                st.dataframe(piv[sorted(piv.columns, key=lambda x: int(str(x).split('-')[0]))].style.map(estilo_malla), use_container_width=True)
-                
+
+                # --- FILTROS DE VISTA PREVIA ---
+                with st.expander("🔍 FILTROS DE BÚSQUEDA", expanded=True):
+                    f1, f2, f3 = st.columns(3)
+                    
+                    # Filtro por Grupo
+                    grupos_disponibles = ["Todos"] + sorted(df_v['Grupo'].unique().tolist())
+                    filtro_g = f1.selectbox("Filtrar por Grupo", grupos_disponibles)
+                    
+                    # Filtro por Persona
+                    personas_disponibles = ["Todas"] + sorted(df_v['Empleado'].unique().tolist())
+                    filtro_p = f2.selectbox("Filtrar por Persona", personas_disponibles)
+                    
+                    # Filtro por Rango de Fechas (Labels)
+                    labels_disp = sorted(df_v['Label'].unique(), key=lambda x: int(x.split('-')[0]))
+                    filtro_d = f3.multiselect("Filtrar Días Específicos", labels_disp, default=labels_disp)
+
+                # Aplicar filtros al DataFrame
+                df_filtrado = df_v.copy()
+                if filtro_g != "Todos":
+                    df_filtrado = df_filtrado[df_filtrado['Grupo'] == filtro_g]
+                if filtro_p != "Todas":
+                    df_filtrado = df_filtrado[df_filtrado['Empleado'] == filtro_p]
+                if filtro_d:
+                    df_filtrado = df_filtrado[df_filtrado['Label'].isin(filtro_d)]
+
+                # --- MODO DE VISUALIZACIÓN ---
+                modo_vista = st.radio("Modo de Visualización", ["Programación Individual", "Resumen por Grupo"], horizontal=True)
+
+                if modo_vista == "Programación Individual":
+                    # Pivotamos de forma que CADA PERSONA sea UNA SOLA FILA
+                    # Quitamos 'Horario' del index para que no se repita el nombre
+                    piv = df_filtrado.pivot(index=['Grupo', 'Empleado', 'Cargo'], columns='Label', values='Final')
+                    
+                    # Reordenar columnas por día
+                    cols_ordenadas = sorted(piv.columns, key=lambda x: int(x.split('-')[0]))
+                    st.dataframe(piv[cols_ordenadas].style.map(estilo_malla), use_container_width=True)
+                    
+                    # Mostrar leyenda de horarios aplicados abajo
+                    st.caption("ℹ️ Los horarios asignados corresponden a la parametrización inicial de T1, T2 y T3.")
+
+                else:
+                    # Vista resumida: Cuánta gente hay por turno cada día en el grupo seleccionado
+                    resumen_g = df_filtrado.groupby(['Label', 'Final']).size().unstack(fill_value=0)
+                    st.markdown("**Conteo de Personal por Turno/Día**")
+                    st.dataframe(resumen_g.T, use_container_width=True)
+
                 st.divider()
-                existe = not df_hist[(df_hist['Mes'] == mes_sel) & (df_hist['Año'] == ano_sel) & (df_hist['Alcance'] == alcance)].empty
-                confirmar = st.checkbox(f"⚠️ Reemplazar {alcance} existente?") if existe else True
                 
-                if st.button("💾 CONFIRMAR Y GUARDAR EN GITHUB"):
-                    if confirmar:
-                        df_hist = df_hist[~((df_hist['Mes'] == mes_sel) & (df_hist['Año'] == ano_sel) & (df_hist['Alcance'] == alcance))]
-                        nueva_fila = pd.DataFrame([{
-                            "Mes": mes_sel, "Año": ano_sel, "Tipo": "Técnica", "Alcance": alcance,
-                            "Fecha": datetime.now().strftime("%d/%m/%Y %H:%M"),
-                            "Datos_JSON": df_v.to_json(orient='split')
-                        }])
-                        df_hist_final = pd.concat([df_hist, nueva_fila], ignore_index=True)
-                        if guardar_excel_en_github(df_hist_final, "historico_mallas.xlsx"):
-                            st.success(f"✅ Guardado en GitHub."); st.balloons()
-                    else: st.error("Debe confirmar el reemplazo.")
+                # --- BOTÓN DE GUARDADO ---
+                c_save1, c_save2 = st.columns([3, 1])
+                with c_save1:
+                    existe = not df_hist[(df_hist['Mes'] == mes_sel) & (df_hist['Año'] == ano_sel) & (df_hist['Alcance'] == alcance)].empty
+                    confirmar = st.checkbox(f"Confirmar reemplazo de {alcance} para {mes_sel}", value=not existe)
+                
+                with c_save2:
+                    if st.button("💾 GUARDAR MALLA", use_container_width=True):
+                        if confirmar:
+                            df_hist = df_hist[~((df_hist['Mes'] == mes_sel) & (df_hist['Año'] == ano_sel) & (df_hist['Alcance'] == alcance))]
+                            nueva_fila = pd.DataFrame([{
+                                "Mes": mes_sel, "Año": ano_sel, "Tipo": "Técnica", "Alcance": alcance,
+                                "Fecha": datetime.now().strftime("%d/%m/%Y %H:%M"),
+                                "Datos_JSON": df_v.to_json(orient='split')
+                            }])
+                            df_hist_final = pd.concat([df_hist, nueva_fila], ignore_index=True)
+                            if guardar_excel_en_github(df_hist_final, "historico_mallas.xlsx"):
+                                st.success("✅ Guardado"); st.balloons()
             else:
-                st.info("No hay ninguna malla generada. Use el Panel de Control.")
+                st.info("⚠️ No hay datos generados. Ve a la pestaña 'Generador Técnicos' primero.")
 
         with tab3:
             st.subheader("Consultar Histórico")
