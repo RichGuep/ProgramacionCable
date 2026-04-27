@@ -20,7 +20,6 @@ def run_app():
         st.session_state['menu_actual'] = "🏠 Inicio"
 
     # --- CARGA DE DATOS ---
-    df_users = read_db("usuarios")
     df_raw = read_db("empleados")
     if df_raw is None:
         df_raw = load_base()
@@ -36,13 +35,12 @@ def run_app():
                 u = st.text_input("Usuario")
                 p = st.text_input("Contraseña", type="password")
                 if st.form_submit_button("INGRESAR", use_container_width=True):
-                    # Validación contra DB (por defecto Richard / Admin2026 si la DB está vacía)
-                    if (u == "richard.guevara@greenmovil.com.co" and p == "Admin2026") or \
-                       (not df_users.empty and u in df_users['Correo'].values):
+                    # Login simple para Richard
+                    if u == "richard.guevara@greenmovil.com.co" and p == "Admin2026":
                         st.session_state['auth'] = True
                         st.rerun()
                     else:
-                        st.error("Acceso denegado")
+                        st.error("Credenciales incorrectas")
         return
 
     # --- NAVEGACIÓN ---
@@ -59,13 +57,12 @@ def run_app():
     # --- MODULO: GESTIÓN DE MALLAS ---
     if st.session_state['menu_actual'] == "📊 Gestión de Mallas":
         st.header("📊 Programación de Operaciones")
-        tab1, tab2, tab3 = st.tabs(["⚙️ Parámetros y Turnos", "⚡ Vista Previa y Resumen", "📜 Histórico"])
+        tab1, tab2, tab3 = st.tabs(["⚙️ Parámetros", "⚡ Vista Previa y Resumen", "📜 Histórico"])
 
         with tab1:
-            # 1. Rango de Fechas y Cupos
             c_fechas, c_cupos = st.columns([1.5, 2])
             with c_fechas:
-                st.subheader("📅 Período de Trabajo")
+                st.subheader("📅 Período")
                 rango = st.date_input("Inicio y Fin", value=(datetime(2026, 4, 1), datetime(2026, 4, 30)))
             
             with c_cupos:
@@ -79,9 +76,7 @@ def run_app():
                 t3_h = c3.text_input("Horario T3", "22:00-06:00")
 
             st.divider()
-            
-            # 2. Configuración de Grupos
-            st.subheader("🛠️ Grupos de Trabajo")
+            st.subheader("🛠️ Grupos")
             n_map, d_map, t_map = {}, {}, {}
             cols_g = st.columns(4)
             for i in range(4):
@@ -99,7 +94,7 @@ def run_app():
                     malla = generar_malla_tecnica_pulp(df_raw, n_map, d_map, t_map, m_cupo, a_cupo, b_cupo, f_i.year, f_i.month, {"inicio": f_i, "fin": f_f})
                     st.session_state['temp_malla'] = malla
                     st.session_state['rango_ref'] = rango
-                    st.success("Malla generada. Revise la siguiente pestaña.")
+                    st.success("Malla generada con éxito.")
                 else:
                     st.error("Seleccione un rango válido.")
 
@@ -108,26 +103,29 @@ def run_app():
                 f_i, f_f = st.session_state['rango_ref']
                 h = st.session_state.get('horarios', {})
                 st.subheader(f"📋 Malla: {f_i.strftime('%d/%m')} al {f_f.strftime('%d/%m')}")
-                st.caption(f"Horarios Aplicados: T1({h.get('T1')}) | T2({h.get('T2')}) | T3({h.get('T3')})")
                 
-                # Visualización
+                # Visualización de la Malla Principal
                 st.dataframe(st.session_state['temp_malla'].style.map(estilo_malla), use_container_width=True)
                 
-                # --- RESUMEN GENERAL ---
+                # --- CORRECCIÓN DEL RESUMEN (Evita el KeyError) ---
                 st.divider()
                 st.subheader("📊 Resumen Ejecutivo (Conteo Diario)")
-                m_t = st.session_state['temp_malla'].T
-                resumen = []
-                for fecha in m_t.index:
-                    counts = m_t[fecha].value_counts()
-                    resumen.append({
-                        "Fecha": fecha,
+                
+                m_resumen = st.session_state['temp_malla']
+                resumen_list = []
+                
+                # Iteramos sobre las columnas (fechas) de la malla directamente
+                for col in m_resumen.columns:
+                    counts = m_resumen[col].value_counts()
+                    resumen_list.append({
+                        "Fecha": col,
                         "En Turno": counts.get("T1", 0) + counts.get("T2", 0) + counts.get("T3", 0),
                         "Descanso (D)": counts.get("D", 0),
                         "Disponible (X)": counts.get("X", 0)
                     })
-                df_res = pd.DataFrame(resumen).set_index("Fecha")
-                st.table(df_res.T) # Detalle rápido horizontal
+                
+                df_res_final = pd.DataFrame(resumen_list).set_index("Fecha")
+                st.table(df_res_final.T)
                 
                 if st.button("💾 GUARDAR DEFINITIVAMENTE EN GITHUB", use_container_width=True):
                     malla_json = st.session_state['temp_malla'].to_json(orient='split')
@@ -139,7 +137,7 @@ def run_app():
                     df_h = read_db("historico_mallas")
                     if df_h is None: df_h = pd.DataFrame(columns=["Mes", "Año", "Rango", "Fecha_Crea", "Datos_JSON", "Horarios"])
                     if save_db(pd.concat([df_h, nueva], ignore_index=True), "historico_mallas"):
-                        st.success("✅ Malla sincronizada en GitHub.")
+                        st.success("✅ Sincronizado en GitHub.")
             else:
                 st.warning("No hay datos generados.")
 
@@ -149,8 +147,7 @@ def run_app():
             if df_hist is not None and not df_hist.empty:
                 for i, row in df_hist.iterrows():
                     with st.expander(f"Malla {row['Mes']} {row['Año']} - ({row['Rango']})"):
-                        st.write(f"Creada el: {row['Fecha_Crea']}")
-                        if st.button("Recuperar esta versión", key=f"rec_{i}"):
+                        if st.button("Cargar versión", key=f"rec_{i}"):
                             st.session_state['temp_malla'] = pd.read_json(io.StringIO(row['Datos_JSON']), orient='split')
                             st.rerun()
             else:
@@ -161,20 +158,18 @@ def run_app():
         st.header("👥 Gestión de Técnicos")
         st.dataframe(df_raw, use_container_width=True)
         with st.form("new_tec"):
-            st.subheader("Añadir Personal")
             n = st.text_input("Nombre")
             c = st.selectbox("Cargo", ["MASTER", "TECNICO A", "TECNICO B"])
-            if st.form_submit_button("Guardar Técnico"):
+            if st.form_submit_button("Guardar"):
                 if n:
                     nuevo = pd.concat([df_raw, pd.DataFrame([{"nombre": n.upper(), "cargo": c, "grupo": "SIN GRUPO"}])], ignore_index=True)
-                    if save_db(nuevo, "empleados"):
-                        st.success("Guardado"); st.rerun()
+                    save_db(nuevo, "empleados")
+                    st.rerun()
 
     # --- MODULO: INICIO ---
     else:
-        st.title("🚀 Panel de Control MovilGo")
-        st.write(f"Técnicos activos: {len(df_raw)}")
-        st.info("Seleccione una opción en el menú lateral para operar.")
+        st.title("🚀 MovilGo Admin")
+        st.write(f"Técnicos: {len(df_raw)}")
 
 if __name__ == "__main__":
     run_app()
