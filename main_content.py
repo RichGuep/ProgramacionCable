@@ -110,14 +110,14 @@ def run_app():
 
         tab1, tab2, tab3 = st.tabs(["⚙️ Parametrización", "⚡ Vista Previa y Reporte", "📜 Histórico"])
 
-        with tab1:
-            st.header("🎮 Parámetros de Programación")
+       with tab1:
+            st.header("🎮 Centro de Mando")
             c_cfg = st.columns(3)
-            m_req = c_cfg[0].number_input("Masters Requeridos", 1, 5, 2)
-            ta_req = c_cfg[1].number_input("Técnicos A", 1, 15, 7)
-            tb_req = c_cfg[2].number_input("Técnicos B", 1, 10, 3)
+            m_req = c_cfg[0].number_input("Masters", 1, 5, 2)
+            ta_req = c_cfg[1].number_input("Tec A", 1, 15, 7)
+            tb_req = c_cfg[2].number_input("Tec B", 1, 10, 3)
 
-            st.subheader("Configuración de Horarios")
+            st.subheader("Horarios de Operación")
             h_cols = st.columns(3)
             dict_h = {}
             for i, t in enumerate(["T1", "T2", "T3"]):
@@ -126,19 +126,37 @@ def run_app():
                     fin = st.text_input(f"Fin {t}", "14:00" if i==0 else "22:00" if i==1 else "06:00", key=f"hf_{i}")
                     dict_h[t] = {"inicio": ini, "fin": fin}
 
-           if st.button("🚀 GENERAR MALLA TÉCNICA", use_container_width=True):
-                # IMPORTANTE: Pasar n_map, d_map y t_map que configuramos arriba
+            # --- AQUÍ ESTABA EL DETALLE: DEFINIR LOS MAPAS ANTES DEL BOTÓN ---
+            st.subheader("Configuración de Grupos y Descansos")
+            n_map, d_map, t_map = {}, {}, {}
+            cols_g = st.columns(4)
+            for i in range(4):
+                with cols_g[i]:
+                    g_label = f"G{i+1}"
+                    n_s = st.text_input(f"Nombre {g_label}", f"GRUPO {i+1}", key=f"gn_{i}")
+                    d_s = st.selectbox(f"Descanso {g_label}", DIAS_SEMANA, index=i % 7, key=f"gd_{i}")
+                    es_disp = st.checkbox(f"Disponibilidad", value=(i==3), key=f"gt_{i}")
+                    
+                    # Llenamos los diccionarios con la info del usuario
+                    n_map[g_label] = n_s
+                    d_map[n_s] = d_s
+                    t_map[n_s] = "DISP" if es_disp else "ROTA"
+
+            st.divider()
+
+            # BOTÓN CORREGIDO: Ahora sí pasamos n_map, d_map y t_map
+            if st.button("🚀 GENERAR PROGRAMACIÓN TÉCNICA", use_container_width=True):
                 st.session_state['temp_malla_tec'] = generar_malla_tecnica_pulp(
                     df_raw, 
-                    n_map,    # Nombres de grupos
-                    d_map,    # Días de descanso
-                    t_map,    # Tipo (ROTA/DISP)
+                    n_map,    # Nombres
+                    d_map,    # Descansos
+                    t_map,    # Rota/Disp
                     m_req, 
                     ta_req, 
                     tb_req, 
                     f_inicio.year, 
                     f_inicio.month, 
-                    dict_h    # Horarios T1, T2, T3
+                    dict_h
                 )
                 st.success("✅ Malla generada con éxito.")
 
