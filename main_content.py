@@ -82,12 +82,12 @@ def run_app():
                 st.success("Malla generada exitosamente. Revise la pestaña 'Vista Previa'.")
 
         with tab2:
-            if 'temp_malla' in st.session_state:
+            # Verificamos que AMBAS llaves existan para evitar el KeyError
+            if 'temp_malla' in st.session_state and 'fecha_malla_ref' in st.session_state:
                 st.subheader(f"Malla: {st.session_state['fecha_malla_ref'].strftime('%B %Y')}")
                 st.dataframe(st.session_state['temp_malla'].style.applymap(estilo_malla), use_container_width=True)
                 
                 if st.button("💾 GUARDAR ESTA VERSIÓN EN GITHUB", use_container_width=True):
-                    # Guardar como JSON para persistencia
                     malla_json = st.session_state['temp_malla'].to_json(orient='split')
                     nueva_entrada = pd.DataFrame([{
                         "Mes": st.session_state['fecha_malla_ref'].strftime("%B"),
@@ -103,7 +103,7 @@ def run_app():
                     if save_db(pd.concat([df_hist, nueva_entrada], ignore_index=True), "historico_mallas"):
                         st.success("✅ Malla guardada y respaldada en GitHub.")
             else:
-                st.warning("No hay datos generados aún.")
+                st.warning("⚠️ No hay datos generados. Ve a la pestaña '⚙️ Configuración' y presiona '🚀 GENERAR MALLA TÉCNICA'.")
 
         with tab3:
             st.subheader("Versiones Guardadas")
