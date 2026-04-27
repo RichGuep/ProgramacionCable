@@ -16,30 +16,37 @@ def commit_to_github():
         user = st.secrets["GITHUB_USER"]
         repo_name = st.secrets["GITHUB_REPO"]
         
-        # 2. Configurar la URL con permisos
-        remote_url = f"https://{user}:{token}@github.com/{user}/{repo_name}.git"
+        # 2. Configurar la URL con permisos (ghp_... @github.com)
+        remote_url = f"https://{token}@github.com/{user}/{repo_name}.git"
         
+        # 3. Acceder al repositorio local en el servidor
         repo = Repo(".")
         
-        # 3. Configurar usuario para el commit
+        # 4. Configurar identidad (necesario para hacer commits)
         with repo.config_writer() as cw:
             cw.set_value("user", "name", "MovilGo Admin")
-            cw.set_value("user", "email", "richard@movilgo.com")
+            cw.set_value("user", "email", "admin@movilgo.com")
 
-        # 4. Añadir el archivo .db y subirlo
+        # 5. Añadir y guardar cambios localmente
         if os.path.exists(DB_NAME):
             repo.git.add(DB_NAME)
-            repo.index.commit("Sincronización de Base de Datos")
+            # Solo hacer commit si hay cambios reales para evitar errores
+            if repo.is_dirty(untracked_files=True):
+                repo.index.commit("Actualización de base de datos")
             
-            # Verificar si existe el remoto, si no, crearlo
-            if 'origin_sync' in [r.name for r in repo.remotes]:
+            # 6. Forzar la subida a GitHub
+            # Intentamos limpiar el remoto 'origin' si existe para evitar conflictos
+            try:
                 repo.delete_remote('origin_sync')
-            
+            except:
+                pass
+                
             origin = repo.create_remote('origin_sync', remote_url)
-            origin.push('main')
+            origin.push('main') # Asegúrate que tu rama se llame 'main'
             return True
     except Exception as e:
-        print(f"Error Git: {e}")
+        # Esto imprimirá el error exacto en la consola negra (Logs)
+        st.error(f"Error al sincronizar con GitHub: {e}")
         return False
 
 def read_db(table_name):
@@ -48,9 +55,9 @@ def read_db(table_name):
     except Exception as e:
         if "no such table" in str(e).lower():
             if table_name == "empleados":
-                df_inicial = load_base() 
-                save_db(df_inicial, "empleados")
-                return df_inicial
+                df_ini = load_base() 
+                save_db(df_ini, "empleados")
+                return df_ini
             elif table_name == "usuarios":
                 df_admin = pd.DataFrame([{"Nombre": "Richard", "Correo": "richard.guevara@greenmovil.com.co", "Rol": "Admin", "Password": "Admin2026"}])
                 save_db(df_admin, "usuarios")
@@ -59,12 +66,10 @@ def read_db(table_name):
 
 def save_db(df, table_name):
     try:
-        # Guardar en el archivo local de la app
+        # Guarda el archivo en el disco del servidor
         df.to_sql(table_name, engine, if_exists='replace', index=False)
-        
-        # ¡ESTA ES LA LÍNEA CLAVE! Envía el archivo a tu GitHub
-        commit_to_github() 
-        
+        # Activa la sincronización con tu repositorio
+        commit_to_github()
         return True
     except Exception as e:
         st.error(f"Error SQLite: {e}")
