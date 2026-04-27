@@ -53,8 +53,8 @@ def run_app():
                         st.error("Credenciales incorrectas.")
         return
 
-    # --- PANEL DE DATOS BASE ---
-    df_raw = load_base() # Carga empleados.xlsx desde GitHub vía logic.py
+    # --- CARGA DE DATOS ---
+    df_raw = load_base()
 
     # --- SIDEBAR DINÁMICO ---
     with st.sidebar:
@@ -64,7 +64,7 @@ def run_app():
 
         # Mostrar fechas SOLO en Gestión de Mallas
         if st.session_state['menu_actual'] == "📊 Gestión de Mallas":
-            st.subheader("📅 Periodo a Programar")
+            st.subheader("📅 Periodo de Programación")
             f_inicio = st.date_input("Fecha Inicio", datetime(2026, 4, 1))
             f_fin = st.date_input("Fecha Fin", datetime(2026, 4, 30))
             st.divider()
@@ -81,26 +81,23 @@ def run_app():
 
     # --- VISTA: INICIO (DASHBOARD) ---
     if st.session_state['menu_actual'] == "🏠 Inicio":
-        st.title(f"👋 Bienvenido, {st.session_state['rol']}")
-        st.write("Seleccione un módulo para comenzar:")
+        st.title(f"👋 Bienvenido al Panel")
+        st.write("Seleccione el módulo de trabajo:")
         st.divider()
         
         c1, c2, c3 = st.columns(3)
         with c1:
             st.markdown('<p style="color:#059669; font-weight:bold;">OPERACIONES</p>', unsafe_allow_html=True)
-            if st.button("📊 GESTIÓN DE MALLAS\n\nTurnos y Cobertura", use_container_width=True):
-                st.session_state['menu_actual'] = "📊 Gestión de Mallas"
-                st.rerun()
+            if st.button("📊 GESTIÓN DE MALLAS\n\nProgramación y Turnos", use_container_width=True):
+                st.session_state['menu_actual'] = "📊 Gestión de Mallas"; st.rerun()
         with c2:
             st.markdown('<p style="color:#2563eb; font-weight:bold;">RECURSOS</p>', unsafe_allow_html=True)
-            if st.button("👥 BASE DE DATOS\n\nAltas/Bajas Personal", use_container_width=True):
-                st.session_state['menu_actual'] = "👥 Base de Datos"
-                st.rerun()
+            if st.button("👥 BASE DE DATOS\n\nAltas y Bajas Personal", use_container_width=True):
+                st.session_state['menu_actual'] = "👥 Base de Datos"; st.rerun()
         with c3:
-            st.markdown('<p style="color:#d97706; font-weight:bold;">CONTROL</p>', unsafe_allow_html=True)
-            if st.button("⚙️ USUARIOS\n\nSeguridad y Accesos", use_container_width=True):
-                st.session_state['menu_actual'] = "⚙️ Usuarios"
-                st.rerun()
+            st.markdown('<p style="color:#d97706; font-weight:bold;">CONFIGURACIÓN</p>', unsafe_allow_html=True)
+            if st.button("⚙️ USUARIOS\n\nRoles y Seguridad", use_container_width=True):
+                st.session_state['menu_actual'] = "⚙️ Usuarios"; st.rerun()
 
     # --- VISTA: GESTIÓN DE MALLAS ---
     elif st.session_state['menu_actual'] == "📊 Gestión de Mallas":
@@ -108,16 +105,16 @@ def run_app():
         if df_hist is None:
             df_hist = pd.DataFrame(columns=["Mes", "Año", "Tipo", "Fecha", "Datos_JSON"])
 
-        tab1, tab2, tab3 = st.tabs(["⚙️ Parametrización", "⚡ Vista Previa y Reporte", "📜 Histórico"])
+        tab1, tab2, tab3 = st.tabs(["⚙️ Parametrización", "⚡ Vista y Reportes", "📜 Histórico"])
 
-       with tab1:
+        with tab1:
             st.header("🎮 Centro de Mando")
             c_cfg = st.columns(3)
             m_req = c_cfg[0].number_input("Masters", 1, 5, 2)
             ta_req = c_cfg[1].number_input("Tec A", 1, 15, 7)
             tb_req = c_cfg[2].number_input("Tec B", 1, 10, 3)
 
-            st.subheader("Horarios de Operación")
+            st.subheader("Configuración de Horarios")
             h_cols = st.columns(3)
             dict_h = {}
             for i, t in enumerate(["T1", "T2", "T3"]):
@@ -126,8 +123,7 @@ def run_app():
                     fin = st.text_input(f"Fin {t}", "14:00" if i==0 else "22:00" if i==1 else "06:00", key=f"hf_{i}")
                     dict_h[t] = {"inicio": ini, "fin": fin}
 
-            # --- AQUÍ ESTABA EL DETALLE: DEFINIR LOS MAPAS ANTES DEL BOTÓN ---
-            st.subheader("Configuración de Grupos y Descansos")
+            st.subheader("Configuración de Grupos")
             n_map, d_map, t_map = {}, {}, {}
             cols_g = st.columns(4)
             for i in range(4):
@@ -136,106 +132,76 @@ def run_app():
                     n_s = st.text_input(f"Nombre {g_label}", f"GRUPO {i+1}", key=f"gn_{i}")
                     d_s = st.selectbox(f"Descanso {g_label}", DIAS_SEMANA, index=i % 7, key=f"gd_{i}")
                     es_disp = st.checkbox(f"Disponibilidad", value=(i==3), key=f"gt_{i}")
-                    
-                    # Llenamos los diccionarios con la info del usuario
                     n_map[g_label] = n_s
                     d_map[n_s] = d_s
                     t_map[n_s] = "DISP" if es_disp else "ROTA"
 
-            st.divider()
-
-            # BOTÓN CORREGIDO: Ahora sí pasamos n_map, d_map y t_map
-            if st.button("🚀 GENERAR PROGRAMACIÓN TÉCNICA", use_container_width=True):
+            if st.button("🚀 GENERAR MALLA TÉCNICA", use_container_width=True):
                 st.session_state['temp_malla_tec'] = generar_malla_tecnica_pulp(
-                    df_raw, 
-                    n_map,    # Nombres
-                    d_map,    # Descansos
-                    t_map,    # Rota/Disp
-                    m_req, 
-                    ta_req, 
-                    tb_req, 
-                    f_inicio.year, 
-                    f_inicio.month, 
-                    dict_h
+                    df_raw, n_map, d_map, t_map, m_req, ta_req, tb_req, 
+                    f_inicio.year, f_inicio.month, dict_h
                 )
-                st.success("✅ Malla generada con éxito.")
+                st.success("✅ Malla generada.")
 
         with tab2:
             if 'temp_malla_tec' in st.session_state:
                 df_v = st.session_state['temp_malla_tec']
-                st.subheader("🔍 Filtros de Visualización")
-                
+                st.subheader("🔍 Reporte Detallado")
                 f_row = st.columns([2, 1, 1])
                 with f_row[0]:
-                    st.write("**Rango de Fechas para Listado:**")
                     r1, r2 = st.columns(2)
                     v_ini = r1.date_input("Desde", f_inicio, key="v_ini")
                     v_fin = r2.date_input("Hasta", f_fin, key="v_fin")
-                
                 g_sel = f_row[1].selectbox("Grupo", ["Todos"] + sorted(df_v['Grupo'].unique().tolist()))
                 modo = f_row[2].radio("Formato", ["Listado Detallado", "Malla Visual"])
-
-                st.divider()
 
                 if modo == "Listado Detallado":
                     df_v['Fecha_DT'] = df_v['Label'].apply(lambda x: datetime(f_inicio.year, f_inicio.month, int(x.split('-')[0])).date())
                     df_res = df_v[(df_v['Fecha_DT'] >= v_ini) & (df_v['Fecha_DT'] <= v_fin)].copy()
                     if g_sel != "Todos": df_res = df_res[df_res['Grupo'] == g_sel]
-                    
                     df_res['Hr. Inicio'] = df_res['Horario'].apply(lambda x: x.split('-')[0] if '-' in str(x) else "---")
                     df_res['Hr. Fin'] = df_res['Horario'].apply(lambda x: x.split('-')[1] if '-' in str(x) else "---")
-                    
                     st.dataframe(df_res[['Fecha_DT', 'Grupo', 'Empleado', 'Cargo', 'Final', 'Hr. Inicio', 'Hr. Fin']].rename(columns={'Fecha_DT': 'Fecha'}), use_container_width=True)
                 else:
                     st.dataframe(df_v.pivot(index=['Grupo', 'Empleado', 'Cargo'], columns='Label', values='Final').style.map(estilo_malla), use_container_width=True)
 
-                if st.button("💾 GUARDAR VERSIÓN EN GITHUB", use_container_width=True):
+                if st.button("💾 GUARDAR VERSIÓN", use_container_width=True):
                     nueva = pd.DataFrame([{"Mes": f_inicio.strftime("%B"), "Año": f_inicio.year, "Fecha": datetime.now().strftime("%d/%m/%Y %H:%M"), "Datos_JSON": df_v.to_json(orient='split')}])
                     if guardar_excel_en_github(pd.concat([df_hist, nueva], ignore_index=True), "historico_mallas.xlsx"):
-                        st.success("✅ Guardado en Histórico.")
-            else:
-                st.info("No hay datos generados aún.")
+                        st.success("✅ Guardado.")
+            else: st.info("Genere una malla primero.")
 
         with tab3:
-            st.subheader("📜 Historial de Programaciones")
-            if not df_hist.empty:
-                st.dataframe(df_hist[["Mes", "Año", "Fecha"]], use_container_width=True)
+            st.subheader("📜 Historial")
+            if not df_hist.empty: st.dataframe(df_hist[["Mes", "Año", "Fecha"]], use_container_width=True)
 
     # --- VISTA: BASE DE DATOS (ALTAS/BAJAS) ---
     elif st.session_state['menu_actual'] == "👥 Base de Datos":
         st.header("👥 Gestión de Personal")
-        
-        # 1. Registrar Nuevo
-        with st.expander("➕ REGISTRAR NUEVO EMPLEADO", expanded=False):
-            with st.form("form_registro", clear_on_submit=True):
+        with st.expander("➕ REGISTRAR NUEVO EMPLEADO"):
+            with st.form("f_reg", clear_on_submit=True):
                 c1, c2, c3 = st.columns(3)
                 nom = c1.text_input("Nombre Completo")
-                car = c2.selectbox("Cargo", ["MASTER", "TECNICO A", "TECNICO B", "AUXILIAR"])
-                gru = c3.text_input("Grupo (Opcional)", "SIN GRUPO")
-                if st.form_submit_button("GUARDAR EN GITHUB"):
+                car = c2.selectbox("Cargo", ["MASTER", "TECNICO A", "TECNICO B"])
+                gru = c3.text_input("Grupo", "SIN GRUPO")
+                if st.form_submit_button("💾 GUARDAR PERSONAL"):
                     if nom:
+                        # Usamos 'nombre' en minúscula para coincidir con logic.py
                         df_new = pd.concat([df_raw, pd.DataFrame([{"nombre": nom.upper(), "cargo": car, "grupo": gru.upper()}])], ignore_index=True)
-                        if guardar_excel_en_github(df_new, "empleados.xlsx"):
-                            st.success(f"{nom} registrado."); st.rerun()
+                        if guardar_excel_en_github(df_new, "empleados.xlsx"): st.success("Registrado."); st.rerun()
                     else: st.error("Falta el nombre.")
-
+        
         st.divider()
-
-        # 2. Listado y Eliminación
-        st.subheader("📋 Personal Activo")
-        if df_raw is not None and not df_raw.empty:
-            bus = st.text_input("🔍 Buscar por nombre...").upper()
+        if df_raw is not None:
+            bus = st.text_input("🔍 Buscar empleado...").upper()
             df_f = df_raw[df_raw['nombre'].str.contains(bus, na=False)] if bus else df_raw
-            st.dataframe(df_f, use_container_width=True, height=300)
+            st.dataframe(df_f, use_container_width=True)
             
-            st.markdown("---")
             st.subheader("🗑️ Dar de Baja")
-            col_sel, col_btn = st.columns([3, 1])
-            elim = col_sel.selectbox("Seleccione para eliminar:", df_raw['nombre'].tolist(), index=None)
-            if col_btn.button("❌ ELIMINAR", use_container_width=True):
-                if elim:
-                    if guardar_excel_en_github(df_raw[df_raw['nombre'] != elim], "empleados.xlsx"):
-                        st.warning(f"{elim} eliminado."); st.rerun()
+            elim = st.selectbox("Seleccione para eliminar:", df_raw['nombre'].tolist(), index=None)
+            if st.button("❌ ELIMINAR") and elim:
+                if guardar_excel_en_github(df_raw[df_raw['nombre'] != elim], "empleados.xlsx"): 
+                    st.warning("Eliminado."); st.rerun()
         
         if st.button("⬅️ VOLVER AL INICIO"):
             st.session_state['menu_actual'] = "🏠 Inicio"; st.rerun()
