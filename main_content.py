@@ -126,10 +126,19 @@ def run_app():
                     fin = st.text_input(f"Fin {t}", "14:00" if i==0 else "22:00" if i==1 else "06:00", key=f"hf_{i}")
                     dict_h[t] = {"inicio": ini, "fin": fin}
 
-            if st.button("🚀 GENERAR MALLA TÉCNICA", use_container_width=True):
+           if st.button("🚀 GENERAR MALLA TÉCNICA", use_container_width=True):
+                # IMPORTANTE: Pasar n_map, d_map y t_map que configuramos arriba
                 st.session_state['temp_malla_tec'] = generar_malla_tecnica_pulp(
-                    df_raw, {}, {}, {}, m_req, ta_req, tb_req, 
-                    f_inicio.year, f_inicio.month, dict_h
+                    df_raw, 
+                    n_map,    # Nombres de grupos
+                    d_map,    # Días de descanso
+                    t_map,    # Tipo (ROTA/DISP)
+                    m_req, 
+                    ta_req, 
+                    tb_req, 
+                    f_inicio.year, 
+                    f_inicio.month, 
+                    dict_h    # Horarios T1, T2, T3
                 )
                 st.success("✅ Malla generada con éxito.")
 
