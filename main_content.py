@@ -59,6 +59,7 @@ def run_app():
         tab1, tab2, tab3 = st.tabs(["⚙️ Parámetros y Turnos", "⚡ Vista Horizontal y Resumen", "📜 Histórico"])
 
         with tab1:
+            # 1. Rango de Fechas y Cupos
             c_fechas, c_cupos = st.columns([1.5, 2])
             with c_fechas:
                 st.subheader("📅 Período")
@@ -89,28 +90,23 @@ def run_app():
                     t_map[nom] = tip
 
             if st.button("🚀 GENERAR MALLA ÓPTIMA", use_container_width=True):
-                if len(rango) == 2:
+                if isinstance(rango, tuple) and len(rango) == 2:
                     f_i, f_f = rango
                     
-                    # 1. Preparar horarios correctamente para el motor
+                    # Formatear horarios para el motor
                     def parse_h(h_str):
                         p = h_str.split("-")
                         return {"inicio": p[0].strip(), "fin": p[1].strip()} if "-" in h_str else {"inicio": h_str, "fin": ""}
 
                     dict_horarios = {
-                        "T1": parse_h(t1_h),
-                        "T2": parse_h(t2_h),
-                        "T3": parse_h(t3_h)
+                        "T1": parse_h(t1_h), "T2": parse_h(t2_h), "T3": parse_h(t3_h)
                     }
-                    st.session_state['horarios'] = {"T1": t1_h, "T2": t2_h, "T3": t3_h}
+                    st.session_state['horarios_labels'] = {"T1": t1_h, "T2": t2_h, "T3": t3_h}
 
-                    # 2. Generar malla
-                    with st.spinner("Optimizando descansos Zig-Zag..."):
+                    with st.spinner("Optimizando cobertura y compensaciones posterior..."):
                         malla_long = generar_malla_tecnica_pulp(
-                            df_raw, n_map, d_map, t_map, 
-                            m_cupo, a_cupo, b_cupo, 
-                            f_i.year, f_i.month, 
-                            dict_horarios # Pasamos el dict parseado
+                            df_raw, n_map, d_map, t_map, m_cupo, a_cupo, b_cupo, 
+                            f_i.year, f_i.month, dict_horarios
                         )
                     
                     if not malla_long.empty:
@@ -120,16 +116,15 @@ def run_app():
                     else:
                         st.error("No se pudo generar la malla.")
                 else:
-                    st.error("Seleccione un rango válido.")
+                    st.error("Seleccione un rango válido (Inicio y Fin).")
 
         with tab2:
             if 'temp_malla' in st.session_state:
                 df_long = st.session_state['temp_malla']
                 f_i, f_f = st.session_state['rango_ref']
-                h = st.session_state.get('horarios', {})
+                h_lab = st.session_state.get('horarios_labels', {})
 
-                # --- TRANSFORMACIÓN A VISTA HORIZONTAL CORREGIDA ---
-                # Sincronizamos con las columnas 'Dia' y 'Turno' de logic.py
+                # --- VISTA HORIZONTAL ---
                 df_horiz = df_long.pivot_table(
                     index=['Grupo', 'Empleado', 'Cargo'], 
                     columns='Dia', 
@@ -149,17 +144,72 @@ def run_app():
                 if p_sel: df_f = df_f[df_f['Empleado'].isin(p_sel)]
 
                 st.subheader(f"📅 Cronograma de Turnos ({f_i.strftime('%d/%m')} - {f_f.strftime('%d/%m')})")
-                st.caption(f"Horarios: T1: {h.get('T1')} | T2: {h.get('T2')} | T3: {h.get('T3')}")
+                st.caption(f"T1: {h_lab.get('T1')} | T2: {h_lab.get('T2')} | T3: {h_lab.get('T3')}")
                 st.dataframe(df_f.style.map(estilo_malla), use_container_width=True)
 
-                # --- RESUMEN Y GUARDADO (Igual que antes pero usando df_f) ---
-                if st.button("💾 GUARDAR DEFINITIVAMENTE", use_container_width=True):
-                    # ... lógica de guardado ...
-                    st.success("Guardado.")
-            else:
-                st.warning("⚠️ Genere la malla en la pestaña de parámetros.")
+                # --- RESUMEN EJECUTIVO ---
+                st.divider()
+                st.header("📊 Resumen Ejecutivo de Cobertura")
+                
+                lista_dias = df_long['Dia'].unique()
+                dia_analisis = st.selectbox("Seleccione día para análisis detallado:", lista_dias)
+                df_dia = df_long[df_long['Dia'] == dia_analisis]
 
-        # Tab 3 (Histórico) permanece igual...
+                m1, m2, m3, m4 = st.columns(4)
+                m1.metric("👷 Trabajando", df_dia[df_dia['Turno'].isin(['T1', 'T2', 'T3', 'T1 (Apoyo)'])].shape[0])
+                m2.metric("🏖️ Descanso Ley", df_dia[df_dia['Turno'] == 'DESC. LEY'].shape[0])
+                m3.metric("🔄 Compensatorios", df_dia[df_dia['Turno'] == 'DESC. COMPENSATORIO'].shape[0])
+                m4.metric("👥 Total Personal", df_dia.shape[0])
+
+                st.write(f"### 📋 Personal por Cargo y Turno ({dia_analisis})")
+                resumen_cargos = pd.crosstab(
+                    index=df_dia['Cargo'],
+                    columns=df_dia['Turno'],
+                    margins=True, margins_name="TOTAL"
+                )
+                st.table(resumen_cargos)
+
+                # --- BALANCE MENSUAL ---
+                st.divider()
+                st.subheader("⚖️ Control de Equidad (Balance 2+2)")
+                df_balance = df_long[df_long['Turno'].str.contains('DESC')].copy()
+                if not df_balance.empty:
+                    df_balance_count = df_balance.groupby(['Grupo', 'Turno']).size().unstack(fill_value=0)
+                    st.bar_chart(df_balance_count)
+
+                if st.button("💾 GUARDAR DEFINITIVAMENTE", use_container_width=True):
+                    malla_json = df_long.to_json(orient='split')
+                    nueva = pd.DataFrame([{
+                        "Mes": f_i.strftime("%B %Y"), "Rango": f"{f_i} a {f_f}",
+                        "Fecha_Crea": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                        "Datos_JSON": malla_json, "Horarios": str(h_lab)
+                    }])
+                    df_h = read_db("historico_mallas")
+                    if df_h is None: df_h = pd.DataFrame(columns=["Mes", "Rango", "Fecha_Crea", "Datos_JSON", "Horarios"])
+                    if save_db(pd.concat([df_h, nueva], ignore_index=True), "historico_mallas"):
+                        st.success("✅ Guardado en el historial.")
+            else:
+                st.warning("⚠️ Genere la malla en la pestaña anterior.")
+
+        with tab3:
+            st.subheader("📜 Histórico de Versiones")
+            df_hist = read_db("historico_mallas")
+            if df_hist is not None and not df_hist.empty:
+                for i, row in df_hist.iloc[::-1].iterrows():
+                    with st.expander(f"📅 {row['Mes']} - Creada: {row['Fecha_Crea']}"):
+                        if st.button("Cargar esta versión", key=f"h_{i}"):
+                            st.session_state['temp_malla'] = pd.read_json(io.StringIO(row['Datos_JSON']), orient='split')
+                            st.session_state['rango_ref'] = (f_i, f_f) # Rango aproximado
+                            st.rerun()
+
+    elif st.session_state['menu_actual'] == "👥 Base de Datos":
+        st.header("👥 Gestión de Técnicos")
+        st.dataframe(df_raw, use_container_width=True)
+        # ... (resto de tu lógica de Base de Datos sin cambios) ...
+
+    else:
+        st.title("🚀 MovilGo Admin")
+        st.write(f"Técnicos activos: {len(df_raw)}")
 
 if __name__ == "__main__":
     run_app()
