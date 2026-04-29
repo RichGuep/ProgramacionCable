@@ -3,6 +3,9 @@ from pulp import *
 from datetime import datetime
 
 def generar_malla_tecnica_pulp(df_raw, n_map, d_map, t_map, m_req, ta_req, tb_req, ano_sel, mes_num, extra_params):
+    """
+    Motor PuLP: Garantiza T1, T2, T3 y obliga a un descanso semanal (Ley).
+    """
     fecha_inicio = extra_params.get("inicio")
     fecha_fin = extra_params.get("fin")
     horarios_dict = extra_params.get("horarios", {})
@@ -10,15 +13,13 @@ def generar_malla_tecnica_pulp(df_raw, n_map, d_map, t_map, m_req, ta_req, tb_re
     lista_fechas = pd.date_range(start=fecha_inicio, end=fecha_fin)
     dias_semana_es = ["Lunes", "Martes", "Miercoles", "Jueves", "Viernes", "Sabado", "Domingo"]
     
-    # Organización de Células
-    c_list = []
-    # Usar nombres de columnas normalizados
+    # Normalizar cargos
     df_raw.columns = [c.lower() for c in df_raw.columns]
-    
     mas_p = df_raw[df_raw['cargo'].str.contains('MASTER', case=False)].copy()
     tca_p = df_raw[df_raw['cargo'].str.contains('TECNICO A', case=False)].copy()
     tcb_p = df_raw[df_raw['cargo'].str.contains('TECNICO B', case=False)].copy()
     
+    c_list = []
     for g_id, g_name in n_map.items():
         for _ in range(m_req):
             if not mas_p.empty: 
@@ -37,24 +38,25 @@ def generar_malla_tecnica_pulp(df_raw, n_map, d_map, t_map, m_req, ta_req, tb_re
     grupos = list(n_map.values())
     turnos = ["T1", "T2", "T3"]
 
-    prob = LpProblem("Descanso_Garantizado", LpMinimize)
+    prob = LpProblem("Planificacion_Automatica", LpMinimize)
     asig = LpVariable.dicts("Asig", (grupos, lista_fechas, turnos), cat='Binary')
 
-    # Restricciones
+    # --- RESTRICCIONES ---
     semanas = sorted(list(set([f.isocalendar()[1] for f in lista_fechas])))
 
     for g in grupos:
         for s in semanas:
             dias_s = [d for d in lista_fechas if d.isocalendar()[1] == s]
             if not dias_s: continue
-            # GARANTÍA DE DESCANSO: Máximo días de la semana - 1
+            # LEY: Al menos un día de descanso por semana (Máximo días-1 trabajados)
             prob += lpSum([asig[g][d][t] for d in dias_s for t in turnos]) <= len(dias_s) - 1
 
     for d in lista_fechas:
         for t in turnos:
-            prob += lpSum([asig[g][d][t] for g in grupos]) >= 1 # Cobertura obligatoria
+            # COBERTURA: Siempre debe haber alguien en T1, T2 y T3
+            prob += lpSum([asig[g][d][t] for g in grupos]) >= 1
         for g in grupos:
-            prob += lpSum([asig[g][d][t] for t in turnos]) <= 1 # No doble turno
+            prob += lpSum([asig[g][d][t] for t in turnos]) <= 1
 
     prob.solve(PULP_CBC_CMD(msg=0))
 
