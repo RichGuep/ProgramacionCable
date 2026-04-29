@@ -7,6 +7,7 @@ import io
 
 @st.cache_data
 def load_base():
+    """Carga la base de datos de empleados desde el Excel local."""
     try:
         df = pd.read_excel("empleados.xlsx")
         df.columns = df.columns.str.strip().str.lower()
@@ -21,10 +22,13 @@ def load_base():
         return None
 
 def generar_malla_tecnica_pulp(df_raw, n_map, d_map, t_map, m_req, ta_req, tb_req, ano_sel, mes_num, horarios_dict):
+    """
+    Motor de optimización con Balance de Equidad (2 Ley + 2 Compensados).
+    """
     DIAS_SEMANA = ["Lunes", "Martes", "Miercoles", "Jueves", "Viernes", "Sabado", "Domingo"]
     LISTA_TURNOS = ["T1", "T2", "T3"]
     
-    # 1. Preparación de personal
+    # 1. Preparación de personal y células
     c_list = []
     temp_df = df_raw.copy()
     for g_id, g_name in n_map.items():
@@ -51,100 +55,97 @@ def generar_malla_tecnica_pulp(df_raw, n_map, d_map, t_map, m_req, ta_req, tb_re
         })
     semanas = sorted(list(set([d["sem_iso"] for d in d_info])))
 
-    # 3. Motor de Turnos
-    prob = LpProblem("Rotacion_ZigZag_Compensada", LpMinimize)
+    # 3. Motor de Turnos (PuLP) - Rotación Semanal
+    prob = LpProblem("Rotacion_Equitativa", LpMinimize)
     asig = LpVariable.dicts("Asig", (g_rotan, semanas, LISTA_TURNOS), cat='Binary')
+    
     for s in semanas:
         for t in LISTA_TURNOS:
             prob += lpSum([asig[g][s][t] for g in g_rotan]) == 1
         for g in g_rotan:
             prob += lpSum([asig[g][s][t] for t in LISTA_TURNOS]) == 1
+            
     for g in g_rotan:
         for i in range(len(semanas)-1):
             s1, s2 = semanas[i], semanas[i+1]
             prob += asig[g][s1]["T1"] <= asig[g][s2]["T2"]
             prob += asig[g][s1]["T2"] <= asig[g][s2]["T3"]
             prob += asig[g][s1]["T3"] <= asig[g][s2]["T1"]
+            
     prob.solve(PULP_CBC_CMD(msg=0))
     res_sem = {(g, s): t for g in g_rotan for s in semanas for t in LISTA_TURNOS if value(asig[g][s][t]) == 1}
 
-    # 4. Lógica de Descansos Zig-Zag con Compensación POSTERIOR
-    conflictos = {}
-    for g, dia in d_map.items():
-        if dia not in conflictos: conflictos[dia] = []
-        conflictos[dia].append(g)
-
+    # 4. Lógica de Balance Equitativo (2 Ley + 2 Compensados)
     descansos_finales = {}
-    # Trackeamos quién "debe" un descanso para la siguiente semana
-    deuda_descanso = {g: False for g in grupos_nombres}
+    stats_ley = {g: 0 for g in grupos_nombres}
 
     for idx_s, s in enumerate(semanas):
         dias_ocupados_semana = []
         
-        # Primero revisamos quién viene con deuda de la semana anterior
-        for g in grupos_nombres:
-            if deuda_descanso[g]:
-                # Asignar un día entre semana (Miércoles por ejemplo para no chocar con Lunes/Viernes)
-                dia_comp = "Miercoles" if "Miercoles" not in dias_ocupados_semana else "Jueves"
-                descansos_finales[(g, s)] = (dia_comp, "DESC. COMPENSATORIO")
-                dias_ocupados_semana.append(dia_comp)
-                deuda_descanso[g] = False # Deuda saldada
-
-        # Ahora procesamos los días preferidos (Ley)
-        for dia_pref, grupos in conflictos.items():
-            # Filtrar grupos que ya tengan asignado un compensatorio esta semana
-            grupos_pendientes = [g for g in grupos if (g, s) not in descansos_finales]
-            if not grupos_pendientes: continue
-
-            if len(grupos_pendientes) > 1:
-                # El que descanse esta semana será el que NO descansó la anterior (Zig-Zag)
-                lucky_idx = idx_s % len(grupos_pendientes)
-                for i, g in enumerate(grupos_pendientes):
-                    if i == lucky_idx:
-                        descansos_finales[(g, s)] = (dia_pref, "DESC. LEY")
-                        dias_ocupados_semana.append(dia_pref)
-                    else:
-                        # TRABAJA en su día de ley -> Genera DEUDA para la semana siguiente
-                        deuda_descanso[g] = True
-            else:
-                # Sin conflicto o único pendiente
-                g = grupos_pendientes[0]
+        # Ordenamos grupos para que el que tenga menos días de ley tenga prioridad
+        grupos_prioridad = sorted(grupos_nombres, key=lambda x: stats_ley[x])
+        
+        for g in grupos_prioridad:
+            dia_pref = d_map.get(g)
+            
+            # Condición: Si el día de ley no está ocupado esta semana y el grupo lleva menos de 2
+            if dia_pref not in dias_ocupados_semana and stats_ley[g] < 2:
                 descansos_finales[(g, s)] = (dia_pref, "DESC. LEY")
                 dias_ocupados_semana.append(dia_pref)
+                stats_ley[g] += 1
+            else:
+                # Asignar un día compensado (evitando fin de semana y días ya tomados)
+                for dia_comp in ["Martes", "Miercoles", "Jueves", "Viernes", "Lunes"]:
+                    if dia_comp not in dias_ocupados_semana:
+                        descansos_finales[(g, s)] = (dia_comp, "DESC. COMPENSADO")
+                        dias_ocupados_semana.append(dia_comp)
+                        break
 
-    # 5. Reconstrucción
+    # 5. Reconstrucción de la matriz final
     final_rows = []
     for d_i in d_info:
-        s = d_i["sem_iso"]
-        quien_desc_hoy = [g for g in g_rotan if descansos_finales.get((g, s), (None,))[0] == d_i["nom"]]
+        s_iso = d_i["sem_iso"]
+        # Quién descansa hoy de los grupos que rotan
+        descansan_hoy_ROTA = [g for g in g_rotan if descansos_finales.get((g, s_iso), (None, ""))[0] == d_i["nom"]]
         
+        # Lógica del grupo DISP
         t_disp = "T1"
         if g_disp:
-            desc_disp = descansos_finales.get((g_disp, s))
-            if desc_disp and d_i["nom"] == desc_disp[0]: t_disp = desc_disp[1]
-            elif quien_desc_hoy: t_disp = res_sem.get((quien_desc_hoy[0], s), "T1")
-            else: t_disp = "T1 (Apoyo)"
+            desc_disp = descansos_finales.get((g_disp, s_iso))
+            if desc_disp and d_i["nom"] == desc_disp[0]:
+                t_disp = desc_disp[1]
+            elif descansan_hoy_ROTA:
+                # El grupo DISP cubre al que esté descansando hoy
+                t_disp = res_sem.get((descansan_hoy_ROTA[0], s_iso), "T1")
+            else:
+                t_disp = "T1 (Apoyo)"
 
         for g_name in grupos_nombres:
-            # Si el grupo no tiene descanso asignado hoy, trabaja su turno semanal
-            # A menos que sea el grupo DISP
-            if g_name == g_disp: val = t_disp
+            if g_name == g_disp:
+                val = t_disp
             else:
-                desc_g = descansos_finales.get((g_name, s))
-                if desc_g and d_i["nom"] == desc_g[0]: val = desc_g[1]
-                else: val = res_sem.get((g_name, s), "T1")
+                d_g = descansos_finales.get((g_name, s_iso))
+                if d_g and d_i["nom"] == d_g[0]:
+                    val = d_g[1]
+                else:
+                    val = res_sem.get((g_name, s_iso), "T1")
 
-            # Horario
+            # Horario parametrizado
             h_str = ""
             tk = next((k for k in LISTA_TURNOS if k in str(val)), None)
             if tk and tk in horarios_dict:
                 h = horarios_dict[tk]
                 h_str = f"{h['inicio']} - {h['fin']}"
 
-            for _, m in df_celulas[df_celulas['grupo'] == g_name].iterrows():
+            miembros = df_celulas[df_celulas['grupo'] == g_name]
+            for _, m in miembros.iterrows():
                 final_rows.append({
-                    "Grupo": g_name, "Empleado": m['nombre'], "Cargo": m['cargo'],
-                    "Horario": h_str, "Dia": d_i["label"], "Turno": val
+                    "Grupo": g_name, 
+                    "Empleado": m['nombre'], 
+                    "Cargo": m['cargo'],
+                    "Horario": h_str, 
+                    "Dia": d_i["label"], 
+                    "Turno": val
                 })
 
     return pd.DataFrame(final_rows)
