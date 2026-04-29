@@ -72,27 +72,31 @@ def generar_malla_tecnica_pulp(df_raw, n_map, d_map, t_map, m_req, ta_req, tb_re
                 objetivo.append(1 - trabaja[g][d_i['n']])
     prob += lpSum(objetivo)
 
-    # RESTRICCIONES
-    for s in semanas:
-        dias_de_sem = [d['n'] for d in d_info if d['sem_iso'] == s]
+    # --- RESTRICCIONES REFORMULADAS (LINEALES) ---
+for d_i in d_info:
+    d = d_i['n']
+    s = d_i['sem_iso']
+    for t in LISTA_TURNOS:
+        # Creamos una variable auxiliar que represente "Grupo g está en turno t Y trabaja el día d"
+        # Pero para no complicar, usamos una lógica de flujo:
         
+        cumplen_turno = []
         for g in grupos:
-            # 1. Cada grupo tiene exactamente 1 turno asignado por semana
-            prob += lpSum([asig[g][s][t] for t in LISTA_TURNOS]) == 1
+            # Creamos una variable de estado: 1 si el grupo está activo en ese turno ese día
+            activo = LpVariable(f"Activo_{g}_{d}_{t}", cat='Binary')
             
-            # 2. Derecho al descanso: Debe descansar al menos 1 día a la semana
-            prob += lpSum([trabaja[g][d] for d in dias_de_sem]) <= len(dias_de_sem) - 1
-
-        for t in LISTA_TURNOS:
-            # 3. COBERTURA MÍNIMA: En cada turno, debe haber al menos 1 grupo trabajando
-            for d in dias_de_sem:
-                # Un grupo cubre el turno si está asignado a ese turno esa semana Y trabaja ese día
-                prob += lpSum([asig[g][s][t] for g in grupos]) >= 1 # Asegura un grupo por turno
-                
-                # Relación entre asig y trabaja: si un grupo descansa, no cuenta para la cobertura
-                # Esta es la parte clave: asegura que si alguien descansa, otro grupo asignado al mismo turno (si hubiera) 
-                # o el sistema de apoyo deba cubrirlo.
-                prob += lpSum([asig[g][s][t] * trabaja[g][d] for g in grupos]) >= 1
+            # REGLAS LÓGICAS para 'activo':
+            # activo debe ser 0 si el grupo NO está asignado a ese turno semanal
+            prob += activo <= asig[g][s][t]
+            # activo debe ser 0 si el grupo DESCANSA ese día
+            prob += activo <= trabaja[g][d]
+            # activo solo puede ser 1 si AMBAS son 1
+            prob += activo >= asig[g][s][t] + trabaja[g][d] - 1
+            
+            cumplen_turno.append(activo)
+        
+        # Ahora sí: al menos un grupo debe estar 'activo' en este turno y día
+        prob += lpSum(cumplen_turno) >= 1
 
     # 4. Evitar rotaciones inhumanas (T3 -> T1)
     for g in grupos:
