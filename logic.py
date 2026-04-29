@@ -2,8 +2,8 @@ import pandas as pd
 from pulp import *
 import calendar
 from datetime import datetime
-import io
 import streamlit as st
+import io
 
 @st.cache_data
 def load_base():
@@ -11,145 +11,130 @@ def load_base():
     try:
         df = pd.read_excel("empleados.xlsx")
         df.columns = df.columns.str.strip().str.lower()
-        # Identificar columnas de nombre y cargo
         c_nom = next((c for c in df.columns if 'nom' in c or 'emp' in c), "nombre")
         c_car = next((c for c in df.columns if 'car' in c), "cargo")
         df = df.rename(columns={c_nom: 'nombre', c_car: 'cargo'})
-        # Limpieza de datos
-        df['cargo'] = df['cargo'].astype(str).str.strip().str.upper()
-        df['nombre'] = df['nombre'].astype(str).str.strip().str.upper()
+        df['cargo'] = df['cargo'].astype(str).str.strip()
+        df['nombre'] = df['nombre'].astype(str).str.strip()
         return df
     except Exception as e:
-        st.error(f"Error al cargar base de datos: {e}")
+        st.error(f"Error al cargar empleados.xlsx: {e}")
         return None
 
-def generar_malla_tecnica_pulp(df_raw, n_map, d_map, m_req, ta_req, tb_req, ano_sel, mes_num, horarios_dict):
-    """
-    Motor de optimización automática. 
-    Decide rotación de turnos y descansos compensados.
-    """
+def generar_malla_tecnica_pulp(df_raw, n_map, d_map, t_map, m_req, ta_req, tb_req, ano_sel, mes_num, horarios_dict, alcance="Mes Completo", semana_inicio=1, estado_anterior=None):
     DIAS_SEMANA = ["Lunes", "Martes", "Miercoles", "Jueves", "Viernes", "Sabado", "Domingo"]
     LISTA_TURNOS = ["T1", "T2", "T3"]
     
-    # 1. Organización de Células (Grupos)
+    # 1. Distribución de personal
+    mas_p = df_raw[df_raw['cargo'].str.contains('Master', case=False)].copy()
+    tca_p = df_raw[df_raw['cargo'].str.contains('Tecnico A', case=False)].copy()
+    tcb_p = df_raw[df_raw['cargo'].str.contains('Tecnico B', case=False)].copy()
+    
     c_list = []
-    temp_df = df_raw.copy()
     for g_id, g_name in n_map.items():
-        for cargo, req in zip(['MASTER', 'TECNICO A', 'TECNICO B'], [m_req, ta_req, tb_req]):
-            matches = temp_df[temp_df['cargo'].str.contains(cargo, case=False)].head(req)
-            for _, row in matches.iterrows():
-                c_list.append({**row.to_dict(), "grupo": g_name})
-            temp_df = temp_df.drop(matches.index)
+        for _ in range(m_req):
+            if not mas_p.empty: 
+                c_list.append({**mas_p.iloc[0].to_dict(), "grupo": g_name})
+                mas_p = mas_p.iloc[1:]
+        for _ in range(ta_req):
+            if not tca_p.empty: 
+                c_list.append({**tca_p.iloc[0].to_dict(), "grupo": g_name})
+                tca_p = tca_p.iloc[1:]
+        for _ in range(tb_req):
+            if not tcb_p.empty: 
+                c_list.append({**tcb_p.iloc[0].to_dict(), "grupo": g_name})
+                tcb_p = tcb_p.iloc[1:]
     
     df_celulas = pd.DataFrame(c_list)
-    grupos = list(n_map.values())
+    g_rotan = [g for g in n_map.values() if t_map.get(g) == "ROTA"]
     
-    # 2. Configuración de Calendario
+    # 2. Configuración de tiempo
     num_dias = calendar.monthrange(ano_sel, mes_num)[1]
-    d_info = []
+    d_info_completo = []
     for d in range(1, num_dias + 1):
         fecha = datetime(ano_sel, mes_num, d)
-        d_info.append({
+        sem_del_mes = (d - 1) // 7 + 1
+        d_info_completo.append({
             "n": d, 
             "nom": DIAS_SEMANA[fecha.weekday()], 
-            "sem_iso": fecha.isocalendar()[1],
+            "sem_iso": fecha.isocalendar()[1], 
+            "sem_mes": sem_del_mes,
             "label": f"{d:02d}-{DIAS_SEMANA[fecha.weekday()][:3]}"
         })
 
+    d_info = d_info_completo # Simplificado para volver a la base estable
     semanas = sorted(list(set([d["sem_iso"] for d in d_info])))
-    dias_nums = [d["n"] for d in d_info]
 
-    # 3. Creación del Problema de Optimización
-    prob = LpProblem("Malla_MovilGo_Automatica", LpMaximize)
-
-    # VARIABLES DE DECISIÓN
-    # asig: El grupo g tiene el turno t en la semana s
-    asig = LpVariable.dicts("Asig", (grupos, semanas, LISTA_TURNOS), cat='Binary')
-    # trabaja: El grupo g trabaja el día d (1=Trabaja, 0=Descansa)
-    trabaja = LpVariable.dicts("Trabaja", (grupos, dias_nums), cat='Binary')
-    # activo: Variable auxiliar (asig AND trabaja) para cobertura
-    activo = LpVariable.dicts("Activo", (grupos, dias_nums, LISTA_TURNOS), cat='Binary')
-
-    # FUNCIÓN OBJETIVO
-    # Prioridad 1: Que la gente trabaje (cobertura)
-    obj_trabajo = lpSum([trabaja[g][d] for g in grupos for d in dias_nums])
-    # Prioridad 2: Que el descanso sea en el día preferido
-    preferencias = []
-    for g in grupos:
-        pref = d_map.get(g, "Domingo")
-        for d_i in d_info:
-            if d_i["nom"] == pref:
-                preferencias.append(1 - trabaja[g][d_i['n']])
+    # 3. Optimizador PuLP (Lógica original de rotación semanal)
+    prob = LpProblem("MovilGo_Modular", LpMinimize)
+    asig = LpVariable.dicts("Asig", (g_rotan, semanas, LISTA_TURNOS), cat='Binary')
     
-    # Maximizamos trabajo y satisfacción de descanso (la preferencia tiene peso extra)
-    prob += (obj_trabajo * 1) + (lpSum(preferencias) * 10)
-
-    # RESTRICCIONES
     for s in semanas:
-        d_sem = [d['n'] for d in d_info if d['sem_iso'] == s]
-        for g in grupos:
-            # Cada grupo tiene un turno asignado por semana
+        for t in LISTA_TURNOS:
+            prob += lpSum([asig[g][s][t] for g in g_rotan]) == 1
+        for g in g_rotan:
             prob += lpSum([asig[g][s][t] for t in LISTA_TURNOS]) == 1
-            
-            # REGLA DE ORO: Exactamente 1 descanso por semana
-            # Esto obliga a trabajar 6 días y descansar 1
-            prob += lpSum([trabaja[g][d] for d in d_sem]) == (len(d_sem) - 1)
-
-        for d in d_sem:
-            for t in LISTA_TURNOS:
-                for g in grupos:
-                    # Restricciones de linearización para 'activo'
-                    prob += activo[g][d][t] <= asig[g][s][t]
-                    prob += activo[g][d][t] <= trabaja[g][d]
-                    prob += activo[g][d][t] >= asig[g][s][t] + trabaja[g][d] - 1
-                
-                # COBERTURA: Al menos 1 grupo debe estar presente por turno y día
-                prob += lpSum([activo[g][d][t] for g in grupos]) >= 1
-
-    # ERGONOMÍA: Evitar Turno 3 (Noche) y entrar en Turno 1 (Mañana) la siguiente semana
-    for g in grupos:
+    
+    for g in g_rotan:
         for i in range(len(semanas)-1):
-            prob += asig[g][semanas[i]]["T3"] + asig[g][semanas[i+1]]["T1"] <= 1
+            s1, s2 = semanas[i], semanas[i+1]
+            prob += asig[g][s1]["T1"] <= asig[g][s2]["T2"]
+            prob += asig[g][s1]["T2"] <= asig[g][s2]["T3"]
+            prob += asig[g][s1]["T3"] <= asig[g][s2]["T1"]
 
-    # Ejecutar Solver
     prob.solve(PULP_CBC_CMD(msg=0))
-
-    # 4. Construcción de la Tabla de Resultados
+    
+    # 4. Reconstrucción de matriz
+    res_sem = {(g, s): t for g in g_rotan for s in semanas for t in LISTA_TURNOS if value(asig[g][s][t]) == 1}
     final_rows = []
-    if LpStatus[prob.status] != 'Optimal':
-        # Si no hay solución óptima, intentamos relajar la restricción de descanso (opcional)
-        st.warning("Advertencia: El sistema no encontró una solución perfecta. Verifique la cantidad de grupos.")
+    
+    # Identificar grupo de disponibilidad (DISP)
+    g_disp_list = [g for g in n_map.values() if t_map.get(g) == "DISP"]
+    g_disp = g_disp_list[0] if g_disp_list else None
+    u_t_disp = "T1"
 
     for d_i in d_info:
-        d, s = d_i["n"], d_i["sem_iso"]
-        for g in grupos:
-            # Obtener turno asignado en la semana
-            t_semanal = next((t for t in LISTA_TURNOS if value(asig[g][s][t]) == 1), None)
-            # Verificar si trabaja hoy
-            labora_hoy = value(trabaja[g][d]) == 1
-            
-            # Determinación de etiqueta
-            if not labora_hoy:
-                val_final = "D" # Descanso
-            elif t_semanal:
-                val_final = t_semanal
+        hoy_labels = {}
+        descansan_hoy = [g for g in g_rotan if d_map.get(g) == d_i["nom"]]
+        
+        for g in g_rotan:
+            t_de_la_semana = res_sem.get((g, d_i["sem_iso"]), "T1")
+            if d_i["nom"] == d_map.get(g):
+                hoy_labels[g] = "DESC. LEY"
             else:
-                val_final = "X" # Apoyo/Disponible
+                hoy_labels[g] = t_de_la_semana
+        
+        # Lógica para el grupo DISP
+        l_disp = "T1"
+        if g_disp:
+            if d_i["nom"] == d_map.get(g_disp):
+                l_disp = "DESC. LEY"
+            elif descansan_hoy:
+                l_disp = res_sem.get((descansan_hoy[0], d_i["sem_iso"]), "T1")
+            else:
+                l_disp = "T1"
 
-            # Obtener horario del diccionario
-            h_data = horarios_dict.get(val_final, {"inicio": "", "fin": ""})
-            h_str = f"{h_data['inicio']}-{h_data['fin']}" if labora_hoy and h_data['inicio'] else ""
-
-            # Replicar a todos los empleados del grupo
-            miembros = df_celulas[df_celulas['grupo'] == g]
-            for _, m in miembros.iterrows():
+        # Armar filas finales
+        for g_id, g_name in n_map.items():
+            val = l_disp if g_name == g_disp else hoy_labels.get(g_name, "T1")
+            
+            # Obtener horario del diccionario parametrizado
+            h_str = ""
+            # Buscamos el turno (T1, T2 o T3) dentro del valor, incluso si dice "T1 (Apoyo)"
+            turno_key = next((tk for tk in LISTA_TURNOS if tk in val), None)
+            if turno_key and turno_key in horarios_dict:
+                h = horarios_dict[turno_key]
+                h_str = f"{h['inicio']} - {h['fin']}"
+            
+            for _, m in df_celulas[df_celulas['grupo'] == g_name].iterrows():
                 final_rows.append({
-                    "Grupo": g,
-                    "Empleado": m['nombre'],
-                    "Cargo": m['cargo'],
-                    "Dia": d_i["label"],
-                    "Turno": val_final,
-                    "Horario": h_str
+                    "Grupo": g_name, 
+                    "Empleado": m['nombre'], 
+                    "Cargo": m['cargo'], 
+                    "Horario": h_str,
+                    "Dia": d_i["label"], 
+                    "Turno": val, 
+                    "n_dia": d_i["n"]
                 })
                 
     return pd.DataFrame(final_rows)
