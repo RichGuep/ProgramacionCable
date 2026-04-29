@@ -22,9 +22,6 @@ def load_base():
         return None
 
 def generar_malla_tecnica_pulp(df_raw, n_map, d_map, t_map, m_req, ta_req, tb_req, ano_sel, mes_num, horarios_dict, alcance="Mes Completo", semana_inicio=1, estado_anterior=None):
-    """
-    Motor de optimización con filtrado por alcance y PARAMETRIZACIÓN DE HORARIOS.
-    """
     DIAS_SEMANA = ["Lunes", "Martes", "Miercoles", "Jueves", "Viernes", "Sabado", "Domingo"]
     LISTA_TURNOS = ["T1", "T2", "T3"]
     
@@ -49,36 +46,25 @@ def generar_malla_tecnica_pulp(df_raw, n_map, d_map, t_map, m_req, ta_req, tb_re
                 tcb_p = tcb_p.iloc[1:]
     
     df_celulas = pd.DataFrame(c_list)
-    g_rotan = [g for g in n_map.values() if t_map[g] == "ROTA"]
+    g_rotan = [g for g in n_map.values() if t_map.get(g) == "ROTA"]
+    g_disp_list = [g for g in n_map.values() if t_map.get(g) == "DISP"]
+    g_disp = g_disp_list[0] if g_disp_list else None
     
-    # 2. Configuración de tiempo con FILTRO DE ALCANCE
+    # 2. Configuración de tiempo
     num_dias = calendar.monthrange(ano_sel, mes_num)[1]
     d_info_completo = []
     for d in range(1, num_dias + 1):
         fecha = datetime(ano_sel, mes_num, d)
-        sem_del_mes = (d - 1) // 7 + 1
         d_info_completo.append({
             "n": d, 
             "nom": DIAS_SEMANA[fecha.weekday()], 
             "sem_iso": fecha.isocalendar()[1], 
-            "sem_mes": sem_del_mes,
             "label": f"{d:02d}-{DIAS_SEMANA[fecha.weekday()][:3]}"
         })
-
-    if alcance == "1 Semana":
-        d_info = [d for d in d_info_completo if d["sem_mes"] == semana_inicio]
-    elif alcance == "2 Semanas":
-        d_info = [d for d in d_info_completo if d["sem_mes"] >= semana_inicio and d["sem_mes"] < semana_inicio + 2]
-    else:
-        d_info = d_info_completo
-
-    if not d_info:
-        st.error("No hay días para programar en el rango seleccionado.")
-        return pd.DataFrame()
-
+    d_info = d_info_completo
     semanas = sorted(list(set([d["sem_iso"] for d in d_info])))
 
-    # 3. Optimizador PuLP
+    # 3. Optimizador PuLP (Rotación de Turnos Semanal)
     prob = LpProblem("MovilGo_Modular", LpMinimize)
     asig = LpVariable.dicts("Asig", (g_rotan, semanas, LISTA_TURNOS), cat='Binary')
     
@@ -95,76 +81,88 @@ def generar_malla_tecnica_pulp(df_raw, n_map, d_map, t_map, m_req, ta_req, tb_re
             prob += asig[g][s1]["T2"] <= asig[g][s2]["T3"]
             prob += asig[g][s1]["T3"] <= asig[g][s2]["T1"]
 
-    if estado_anterior:
-        s_ini = semanas[0]
-        for g_n, ult_t in estado_anterior.items():
-            if g_n in g_rotan:
-                if "T3" in str(ult_t): prob += asig[g_n][s_ini]["T1"] == 0
-                elif "T2" in str(ult_t): prob += asig[g_n][s_ini]["T3"] == 1
-
     prob.solve(PULP_CBC_CMD(msg=0))
-    
-    # 4. Reconstrucción de matriz
     res_sem = {(g, s): t for g in g_rotan for s in semanas for t in LISTA_TURNOS if value(asig[g][s][t]) == 1}
+
+    # 4. Lógica de Descansos Inteligente (Evitar colisiones y rotar Ley/Compensado)
+    dynamic_rest = {g: {} for g in n_map.values()}
+    comp_days_pool = ["Martes", "Miercoles", "Jueves"] # Días ideales para compensados
+
+    for week_idx, s_iso in enumerate(semanas):
+        requests = {} # d_nom -> [grupos]
+        for g in n_map.values():
+            d_nom = d_map.get(g)
+            if d_nom not in requests: requests[d_nom] = []
+            requests[d_nom].append(g)
+        
+        days_occupied = set()
+        
+        # Primero asignar los que NO tienen conflicto
+        for day, grps in requests.items():
+            if len(grps) == 1:
+                dynamic_rest[grps[0]][s_iso] = (day, "DESC. LEY")
+                days_occupied.add(day)
+
+        # Resolver conflictos (Mismo día de descanso para varios grupos)
+        for day, grps in requests.items():
+            if len(grps) > 1:
+                # El grupo que "gana" el día de ley rota cada semana
+                lucky_idx = week_idx % len(grps)
+                for i, g in enumerate(grps):
+                    if i == lucky_idx:
+                        dynamic_rest[g][s_iso] = (day, "DESC. LEY")
+                        days_occupied.add(day)
+                    else:
+                        # Asignar un día compensado que no esté ocupado
+                        comp_day = None
+                        for cd in comp_days_pool + ["Lunes", "Viernes"]:
+                            if cd not in days_occupied:
+                                comp_day = cd
+                                break
+                        dynamic_rest[g][s_iso] = (comp_day or "Martes", "DESC. COMPENSADO")
+                        days_occupied.add(comp_day or "Martes")
+
+    # 5. Reconstrucción de matriz final
     final_rows = []
-    
-    turno_vivo = {g: res_sem.get((g, semanas[0]), "T1") for g in g_rotan}
-    g_disp = [g for g in n_map.values() if t_map[g] == "DISP"][0]
     u_t_disp = "T1"
 
     for d_i in d_info:
-        descansan_hoy = [g for g in g_rotan if d_map[g] == d_i["nom"]]
-        hoy_labels = {}
-        for g in g_rotan:
-            if d_i["nom"] == d_map[g]:
-                hoy_labels[g] = "DESC. LEY"
-                turno_vivo[g] = res_sem.get((g, d_i["sem_iso"]), turno_vivo[g])
-            else:
-                hoy_labels[g] = turno_vivo[g]
+        # Identificar quién descansa hoy según la lógica dinámica
+        descansan_hoy_ROTA = [g for g in g_rotan if dynamic_rest[g][d_i["sem_iso"]][0] == d_i["nom"]]
         
-        if d_i["nom"] == d_map[g_disp]: l_disp = "DESC. LEY"
-        else:
-            if descansan_hoy:
-                t_nec = turno_vivo[descansan_hoy[0]]
-                if u_t_disp == "T3": l_disp = "APOYO (Post-Noche)"
-                elif u_t_disp == "T2" and t_nec == "T1": l_disp = "T2 (Apoyo)"
-                else: l_disp = t_nec
+        # Turno del grupo DISP
+        l_disp = "T1"
+        if g_disp:
+            rest_data_disp = dynamic_rest[g_disp][d_i["sem_iso"]]
+            if d_i["nom"] == rest_data_disp[0]:
+                l_disp = rest_data_disp[1]
+            elif descansan_hoy_ROTA:
+                # El DISP cubre al que esté descansando (Ley o Compensado)
+                l_disp = res_sem.get((descansan_hoy_ROTA[0], d_i["sem_iso"]), "T1")
             else:
-                l_disp = "T1" if u_t_disp != "T2" else "T2"
-        
-        if "DESC" not in l_disp and "APOYO" not in l_disp: u_t_disp = l_disp[:2]
+                l_disp = "T1 (Apoyo)"
 
         for g_id, g_name in n_map.items():
-            val = l_disp if g_name == g_disp else hoy_labels.get(g_name, "T1")
-            
-            # DETERMINAR HORARIO DINÁMICO
-            # Si el turno está en nuestro diccionario de horarios, lo extraemos
-            horario_str = ""
-            if val in horarios_dict:
-                h = horarios_dict[val]
-                horario_str = f"{h['inicio']} - {h['fin']}"
+            if g_name == g_disp:
+                val = l_disp
+            else:
+                rest_data = dynamic_rest[g_name][d_i["sem_iso"]]
+                if d_i["nom"] == rest_data[0]:
+                    val = rest_data[1] # "DESC. LEY" o "DESC. COMPENSADO"
+                else:
+                    val = res_sem.get((g_name, d_i["sem_iso"]), "T1")
+
+            # Mapeo de horario
+            h_str = ""
+            turno_key = next((tk for tk in LISTA_TURNOS if tk in val), None)
+            if turno_key and turno_key in horarios_dict:
+                h = horarios_dict[turno_key]
+                h_str = f"{h['inicio']} - {h['fin']}"
             
             for _, m in df_celulas[df_celulas['grupo'] == g_name].iterrows():
                 final_rows.append({
-                    "Grupo": g_name, 
-                    "Empleado": m['nombre'], 
-                    "Cargo": m['cargo'], 
-                    "Horario": horario_str, # <--- Nueva columna parametrizada
-                    "Label": d_i["label"], 
-                    "Final": val, 
-                    "n_dia": d_i["n"]
+                    "Grupo": g_name, "Empleado": m['nombre'], "Cargo": m['cargo'], 
+                    "Horario": h_str, "Dia": d_i["label"], "Turno": val
                 })
                 
     return pd.DataFrame(final_rows)
-
-def generar_malla_auxiliares_pool(df_raw, aux_n_map, aux_d_map, ano_sel, mes_num):
-    # Se mantiene la estructura para auxiliares si decides implementarlo luego
-    return pd.DataFrame()
-
-def reconstruir_malla_desde_json(json_str):
-    try:
-        if pd.isna(json_str) or str(json_str).strip() == "": return None
-        return pd.read_json(io.StringIO(str(json_str)), orient='split')
-    except:
-        try: return pd.read_json(io.StringIO(str(json_str)))
-        except: return None
