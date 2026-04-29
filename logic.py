@@ -7,7 +7,7 @@ import io
 
 @st.cache_data
 def load_base():
-    """Carga la base de datos de empleados desde el Excel local."""
+    """Carga la base de datos de empleados."""
     try:
         df = pd.read_excel("empleados.xlsx")
         df.columns = df.columns.str.strip().str.lower()
@@ -25,7 +25,7 @@ def generar_malla_tecnica_pulp(df_raw, n_map, d_map, t_map, m_req, ta_req, tb_re
     DIAS_SEMANA = ["Lunes", "Martes", "Miercoles", "Jueves", "Viernes", "Sabado", "Domingo"]
     LISTA_TURNOS = ["T1", "T2", "T3"]
     
-    # 1. Asignación de personal
+    # 1. Preparación de personal
     c_list = []
     temp_df = df_raw.copy()
     for g_id, g_name in n_map.items():
@@ -52,8 +52,8 @@ def generar_malla_tecnica_pulp(df_raw, n_map, d_map, t_map, m_req, ta_req, tb_re
         })
     semanas = sorted(list(set([d["sem_iso"] for d in d_info])))
 
-    # 3. Motor de Turnos (PuLP)
-    prob = LpProblem("Rotacion_Semanal", LpMinimize)
+    # 3. Motor de Turnos
+    prob = LpProblem("Rotacion_ZigZag", LpMinimize)
     asig = LpVariable.dicts("Asig", (g_rotan, semanas, LISTA_TURNOS), cat='Binary')
     for s in semanas:
         for t in LISTA_TURNOS:
@@ -69,7 +69,7 @@ def generar_malla_tecnica_pulp(df_raw, n_map, d_map, t_map, m_req, ta_req, tb_re
     prob.solve(PULP_CBC_CMD(msg=0))
     res_sem = {(g, s): t for g in g_rotan for s in semanas for t in LISTA_TURNOS if value(asig[g][s][t]) == 1}
 
-    # 4. Lógica Zig-Zag de Descansos
+    # 4. Lógica de Alternancia Zig-Zag (Corregida)
     conflictos = {}
     for g, dia in d_map.items():
         if dia not in conflictos: conflictos[dia] = []
@@ -80,7 +80,11 @@ def generar_malla_tecnica_pulp(df_raw, n_map, d_map, t_map, m_req, ta_req, tb_re
 
     for idx_s, s in enumerate(semanas):
         dias_ocupados = []
-        for dia_pref, grupos in conflictos.items():
+        # Resolver días con más de un grupo asignado
+        for dia_pref in ["Sabado", "Domingo", "Lunes", "Martes", "Miercoles", "Jueves", "Viernes"]:
+            grupos = conflictos.get(dia_pref, [])
+            if not grupos: continue
+            
             if len(grupos) > 1:
                 lucky_idx = idx_s % len(grupos)
                 for i, g in enumerate(grupos):
@@ -98,10 +102,11 @@ def generar_malla_tecnica_pulp(df_raw, n_map, d_map, t_map, m_req, ta_req, tb_re
                 descansos_finales[(g, s)] = (dia_pref, "DESC. LEY")
                 dias_ocupados.append(dia_pref)
 
-    # 5. Reconstrucción
+    # 5. Construcción de DataFrame
     final_rows = []
     for d_i in d_info:
         quien_desc_hoy = [g for g in g_rotan if descansos_finales.get((g, d_i["sem_iso"]), (None,))[0] == d_i["nom"]]
+        
         t_disp = "T1"
         if g_disp:
             desc_disp = descansos_finales.get((g_disp, d_i["sem_iso"]))
@@ -116,7 +121,7 @@ def generar_malla_tecnica_pulp(df_raw, n_map, d_map, t_map, m_req, ta_req, tb_re
                 val = desc_g[1] if desc_g and d_i["nom"] == desc_g[0] else res_sem.get((g_name, d_i["sem_iso"]), "T1")
 
             h_str = ""
-            tk = next((k for k in LISTA_TURNOS if k in val), None)
+            tk = next((k for k in LISTA_TURNOS if k in str(val)), None)
             if tk and tk in horarios_dict:
                 h = horarios_dict[tk]
                 h_str = f"{h['inicio']} - {h['fin']}"
