@@ -93,17 +93,14 @@ def run_app():
                 if isinstance(rango, tuple) and len(rango) == 2:
                     f_i, f_f = rango
                     
-                    # Formatear horarios para el motor
                     def parse_h(h_str):
                         p = h_str.split("-")
                         return {"inicio": p[0].strip(), "fin": p[1].strip()} if "-" in h_str else {"inicio": h_str, "fin": ""}
 
-                    dict_horarios = {
-                        "T1": parse_h(t1_h), "T2": parse_h(t2_h), "T3": parse_h(t3_h)
-                    }
+                    dict_horarios = {"T1": parse_h(t1_h), "T2": parse_h(t2_h), "T3": parse_h(t3_h)}
                     st.session_state['horarios_labels'] = {"T1": t1_h, "T2": t2_h, "T3": t3_h}
 
-                    with st.spinner("Optimizando cobertura y compensaciones posterior..."):
+                    with st.spinner("Optimizando cobertura y balanceando descansos..."):
                         malla_long = generar_malla_tecnica_pulp(
                             df_raw, n_map, d_map, t_map, m_cupo, a_cupo, b_cupo, 
                             f_i.year, f_i.month, dict_horarios
@@ -115,8 +112,6 @@ def run_app():
                         st.success("Malla generada con éxito.")
                     else:
                         st.error("No se pudo generar la malla.")
-                else:
-                    st.error("Seleccione un rango válido (Inicio y Fin).")
 
         with tab2:
             if 'temp_malla' in st.session_state:
@@ -134,9 +129,9 @@ def run_app():
 
                 st.subheader("🔍 Filtros de Visualización")
                 f1, f2, f3 = st.columns(3)
-                with f1: g_sel = st.multiselect("Filtrar por Grupo", df_horiz['Grupo'].unique())
-                with f2: r_sel = st.multiselect("Filtrar por Rol (Cargo)", df_horiz['Cargo'].unique())
-                with f3: p_sel = st.multiselect("Filtrar por Persona", df_horiz['Empleado'].unique())
+                with f1: g_sel = st.multiselect("Grupo", df_horiz['Grupo'].unique())
+                with f2: r_sel = st.multiselect("Cargo", df_horiz['Cargo'].unique())
+                with f3: p_sel = st.multiselect("Persona", df_horiz['Empleado'].unique())
 
                 df_f = df_horiz.copy()
                 if g_sel: df_f = df_f[df_f['Grupo'].isin(g_sel)]
@@ -144,15 +139,28 @@ def run_app():
                 if p_sel: df_f = df_f[df_f['Empleado'].isin(p_sel)]
 
                 st.subheader(f"📅 Cronograma de Turnos ({f_i.strftime('%d/%m')} - {f_f.strftime('%d/%m')})")
-                st.caption(f"T1: {h_lab.get('T1')} | T2: {h_lab.get('T2')} | T3: {h_lab.get('T3')}")
                 st.dataframe(df_f.style.map(estilo_malla), use_container_width=True)
 
-                # --- RESUMEN EJECUTIVO ---
+                # --- RESUMEN Y AUDITORÍA DE COBERTURA ---
                 st.divider()
-                st.header("📊 Resumen Ejecutivo de Cobertura")
-                
+                st.header("📊 Resumen y Auditoría de Cobertura")
+
+                # 1. RESUMEN CONSOLIDADO (TODO EL MES)
+                st.subheader("📈 Totales Consolidados del Periodo")
+                st.write("Conteo total de turnos y descansos asignados a cada cargo en todo el mes:")
+                resumen_mensual = pd.crosstab(
+                    index=df_long['Cargo'],
+                    columns=df_long['Turno'],
+                    margins=True,
+                    margins_name="TOTAL ACUMULADO"
+                )
+                st.dataframe(resumen_mensual, use_container_width=True)
+
+                # 2. ANÁLISIS DETALLADO POR DÍA
+                st.divider()
+                st.subheader("📅 Detalle Específico por Día")
                 lista_dias = df_long['Dia'].unique()
-                dia_analisis = st.selectbox("Seleccione día para análisis detallado:", lista_dias)
+                dia_analisis = st.selectbox("Seleccione un día para auditar asistencia:", lista_dias)
                 df_dia = df_long[df_long['Dia'] == dia_analisis]
 
                 m1, m2, m3, m4 = st.columns(4)
@@ -161,21 +169,18 @@ def run_app():
                 m3.metric("🔄 Compensatorios", df_dia[df_dia['Turno'] == 'DESC. COMPENSATORIO'].shape[0])
                 m4.metric("👥 Total Personal", df_dia.shape[0])
 
-                st.write(f"### 📋 Personal por Cargo y Turno ({dia_analisis})")
-                resumen_cargos = pd.crosstab(
-                    index=df_dia['Cargo'],
-                    columns=df_dia['Turno'],
-                    margins=True, margins_name="TOTAL"
-                )
-                st.table(resumen_cargos)
+                st.write(f"**Distribución de Cargos el día {dia_analisis}:**")
+                resumen_dia = pd.crosstab(index=df_dia['Cargo'], columns=df_dia['Turno'])
+                st.table(resumen_dia)
 
-                # --- BALANCE MENSUAL ---
+                # 3. CONTROL DE EQUIDAD (BALANCE 2+2)
                 st.divider()
-                st.subheader("⚖️ Control de Equidad (Balance 2+2)")
+                st.subheader("⚖️ Control de Equidad (Balance de Descansos)")
                 df_balance = df_long[df_long['Turno'].str.contains('DESC')].copy()
                 if not df_balance.empty:
                     df_balance_count = df_balance.groupby(['Grupo', 'Turno']).size().unstack(fill_value=0)
                     st.bar_chart(df_balance_count)
+                    st.caption("Verifique que los grupos tengan un balance cercano (Ej: 2 Ley y 2 Compensatorios).")
 
                 if st.button("💾 GUARDAR DEFINITIVAMENTE", use_container_width=True):
                     malla_json = df_long.to_json(orient='split')
@@ -189,7 +194,7 @@ def run_app():
                     if save_db(pd.concat([df_h, nueva], ignore_index=True), "historico_mallas"):
                         st.success("✅ Guardado en el historial.")
             else:
-                st.warning("⚠️ Genere la malla en la pestaña anterior.")
+                st.info("👋 Genere la malla en la pestaña anterior para ver el resumen.")
 
         with tab3:
             st.subheader("📜 Histórico de Versiones")
@@ -199,17 +204,15 @@ def run_app():
                     with st.expander(f"📅 {row['Mes']} - Creada: {row['Fecha_Crea']}"):
                         if st.button("Cargar esta versión", key=f"h_{i}"):
                             st.session_state['temp_malla'] = pd.read_json(io.StringIO(row['Datos_JSON']), orient='split')
-                            st.session_state['rango_ref'] = (f_i, f_f) # Rango aproximado
                             st.rerun()
 
     elif st.session_state['menu_actual'] == "👥 Base de Datos":
         st.header("👥 Gestión de Técnicos")
         st.dataframe(df_raw, use_container_width=True)
-        # ... (resto de tu lógica de Base de Datos sin cambios) ...
 
     else:
         st.title("🚀 MovilGo Admin")
-        st.write(f"Técnicos activos: {len(df_raw)}")
+        st.write(f"Técnicos activos en base: {len(df_raw)}")
 
 if __name__ == "__main__":
     run_app()
