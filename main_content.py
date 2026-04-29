@@ -4,8 +4,8 @@ import os
 import io
 from datetime import datetime, timedelta
 
-# Importes de tus módulos locales
-from database import read_db, save_db, load_base 
+# IMPORTACIONES LIMPIAS
+from database import read_db, save_db, load_base  # load_base viene de database ahora
 from logic import generar_malla_tecnica_pulp
 from styles import estilo_malla, get_login_styles
 
