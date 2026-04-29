@@ -22,6 +22,7 @@ def load_base():
         return None
 
 def generar_malla_tecnica_pulp(df_raw, n_map, d_map, t_map, m_req, ta_req, tb_req, ano_sel, mes_num, horarios_dict):
+    """Motor con Lógica de Compensación en la semana siguiente (T+1)."""
     DIAS_SEMANA = ["Lunes", "Martes", "Miercoles", "Jueves", "Viernes", "Sabado", "Domingo"]
     LISTA_TURNOS = ["T1", "T2", "T3"]
     
@@ -52,13 +53,12 @@ def generar_malla_tecnica_pulp(df_raw, n_map, d_map, t_map, m_req, ta_req, tb_re
         })
     semanas = sorted(list(set([d["sem_iso"] for d in d_info])))
 
-    # 3. Motor de Turnos (PuLP)
-    prob = LpProblem("Rotacion_Compensatoria", LpMinimize)
+    # 3. Motor de Turnos (PuLP) - Mantiene rotación T1->T2->T3
+    prob = LpProblem("Rotacion_Compensacion_Posterior", LpMinimize)
     asig = LpVariable.dicts("Asig", (g_rotan, semanas, LISTA_TURNOS), cat='Binary')
     for s in semanas:
         for t in LISTA_TURNOS: prob += lpSum([asig[g][s][t] for g in g_rotan]) == 1
         for g in g_rotan: prob += lpSum([asig[g][s][t] for t in LISTA_TURNOS]) == 1
-            
     for g in g_rotan:
         for i in range(len(semanas)-1):
             s1, s2 = semanas[i], semanas[i+1]
@@ -68,32 +68,41 @@ def generar_malla_tecnica_pulp(df_raw, n_map, d_map, t_map, m_req, ta_req, tb_re
     prob.solve(PULP_CBC_CMD(msg=0))
     res_sem = {(g, s): t for g in g_rotan for s in semanas for t in LISTA_TURNOS if value(asig[g][s][t]) == 1}
 
-    # 4. Lógica de Compensación Correcta
+    # 4. Lógica de Descansos con Compensación POSTERIOR (Semana Siguiente)
     descansos_finales = {}
-    stats_ley = {g: 0 for g in grupos_nombres} # Contador de descansos de ley disfrutados
+    deuda_compensatorio = {g: False for g in grupos_nombres} # Quién trabajó su descanso la semana anterior
+    stats_ley = {g: 0 for g in grupos_nombres} # Cuántos fines de semana reales lleva descansados
 
     for idx_s, s in enumerate(semanas):
-        dias_ocupados_semana = []
+        dias_ocupados_esta_semana = []
         
-        # Ordenamos: los que menos han descansado en su día de ley tienen prioridad
-        prioridad = sorted(grupos_nombres, key=lambda x: stats_ley[x])
+        # PRIORIDAD 1: Los que tienen deuda de la semana anterior (Compensatorio Obligatorio)
+        for g in grupos_nombres:
+            if deuda_compensatorio[g]:
+                for dia_c in ["Martes", "Miercoles", "Jueves"]: # Días entre semana
+                    if dia_c not in dias_ocupados_esta_semana:
+                        descansos_finales[(g, s)] = (dia_c, "DESC. COMPENSATORIO")
+                        dias_ocupados_esta_semana.append(dia_c)
+                        deuda_compensatorio[g] = False # Deuda pagada
+                        break
+
+        # PRIORIDAD 2: Asignar Descansos de Ley (Sábado/Domingo)
+        # Ordenamos grupos para que rote quien descansa fin de semana
+        prioridad_ley = sorted(grupos_nombres, key=lambda x: stats_ley[x])
         
-        for g in prioridad:
-            dia_pref = d_map.get(g)
+        for g in prioridad_ley:
+            # Si ya se le asignó un compensatorio por deuda arriba, no procesamos ley esta semana
+            if (g, s) in descansos_finales: continue
             
-            # SI le toca descansar su día de ley (Máximo 2 al mes para balancear)
-            if dia_pref not in dias_ocupados_semana and stats_ley[g] < 2:
+            dia_pref = d_map.get(g)
+            # Si el día de ley está libre y no ha excedido su cuota mensual de fines de semana (2)
+            if dia_pref not in dias_ocupados_esta_semana and stats_ley[g] < 2:
                 descansos_finales[(g, s)] = (dia_pref, "DESC. LEY")
-                dias_ocupados_semana.append(dia_pref)
+                dias_ocupados_esta_semana.append(dia_pref)
                 stats_ley[g] += 1
             else:
-                # NO descansa su día de ley (TRABAJA), por lo tanto GANA un COMPENSATORIO
-                # Buscamos un día entre semana para pagarle el sacrificio
-                for dia_comp in ["Martes", "Miercoles", "Jueves"]:
-                    if dia_comp not in dias_ocupados_semana:
-                        descansos_finales[(g, s)] = (dia_comp, "DESC. COMPENSATORIO")
-                        dias_ocupados_semana.append(dia_comp)
-                        break
+                # TRABAJA en su día de ley -> Genera DEUDA para la semana que viene
+                deuda_compensatorio[g] = True
 
     # 5. Reconstrucción
     final_rows = []
